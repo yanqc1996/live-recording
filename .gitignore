@@ -13,7 +13,9 @@ develop-eggs/
 dist/
 downloads/
 node_modules/
-release/
+release/*
+!release/update.json
+!release/update.example.json
 eggs/
 .eggs/
 lib/

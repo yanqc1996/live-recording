@@ -380,13 +380,24 @@ release/github-release/v版本号/
 
 ### 5. 提交 update.json
 
-`release/update.json` 需要提交到仓库，例如：
+`release/update.json` 需要提交到仓库，否则软件访问 `raw.githubusercontent.com/.../release/update.json` 时会 404。
+
+当前 `.gitignore` 会忽略 `release/` 里的大安装包和交付包，但会放行：
+
+```text
+release/update.json
+release/update.example.json
+```
+
+提交示例：
 
 ```bash
-git add release/update.json README.md scripts/prepare_release.py
-git commit -m "Add semi-auto update release workflow"
+git add .gitignore package.json package-lock.json desktop/index.html release/update.json README.md scripts/prepare_release.py desktop_update.py
+git commit -m "Release v0.1.1 update test"
 git push
 ```
+
+注意：不要使用 `git push --tags`，SourceTree 里也不要勾选“Push all tags”。本项目从上游历史里带了很多旧 tag，普通版本更新只需要推当前分支即可。真正需要创建新版本 tag 时，建议只在 GitHub Release 页面创建当前版本的 tag，例如 `v0.1.1`。
 
 当前软件已默认内置这个地址：
 

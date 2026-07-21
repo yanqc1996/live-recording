@@ -1,0 +1,7 @@
+{
+  "version": "0.1.1",
+  "title": "播录助手 v0.1.1",
+  "notes": "修复已知问题，优化直播音频自动重连和作品拉取稳定性。",
+  "download_url": "https://example.com/downloads/播录助手-0.1.1-arm64.dmg",
+  "published_at": "2026-07-21"
+}
