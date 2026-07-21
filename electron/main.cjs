@@ -73,7 +73,8 @@ function startBackend() {
     const environment = {
       ...process.env,
       PYTHONUNBUFFERED: '1',
-      LIVERECORDER_DATA_ROOT: engineRoot
+      LIVERECORDER_DATA_ROOT: engineRoot,
+      BOLU_APP_VERSION: app.getVersion()
     };
     if (app.isPackaged) {
       environment.LIVERECORDER_ENGINE_EXECUTABLE = runtime;

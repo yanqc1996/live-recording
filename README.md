@@ -57,6 +57,13 @@
   - 本地激活
   - 未激活时录制、互动、作品拉取、上传等核心功能会被锁定
 
+- 半自动更新
+  - 支持配置远程 `update.json`
+  - 支持检查是否有新版本
+  - 支持展示更新说明
+  - 支持打开新版安装包下载链接
+  - 不会自动覆盖安装，用户仍需手动下载并安装新版
+
 ## 交付包
 
 当前 macOS 用户交付包位于：
@@ -224,6 +231,40 @@ dist/
 ├── 播录助手 Setup 0.1.0.exe
 └── 播录助手 0.1.0.exe
 ```
+
+## 半自动更新
+
+播录助手当前采用半自动更新机制，不自动下载安装，只负责检查版本和打开下载链接。
+
+你需要提供一个公网可访问的 JSON 文件，例如：
+
+```json
+{
+  "version": "0.1.1",
+  "title": "播录助手 v0.1.1",
+  "notes": "修复已知问题，优化直播音频自动重连和作品拉取稳定性。",
+  "download_url": "https://example.com/downloads/播录助手-0.1.1-arm64.dmg",
+  "published_at": "2026-07-21"
+}
+```
+
+示例文件：
+
+```text
+release/update.example.json
+```
+
+用户在软件里的“软件更新”区域填写该 JSON 地址后，可以点击“检查更新”。如果 `version` 高于当前 `package.json` 版本，软件会显示发现新版本，并允许用户点击“打开下载”。
+
+可用于存放 `update.json` 的位置：
+
+- GitHub Releases 或 GitHub Pages
+- Cloudflare Pages
+- 阿里云 OSS
+- 腾讯云 COS
+- 自己的服务器
+
+第一版不建议做全自动更新，因为当前 macOS 包尚未做 Apple Developer ID 签名和 notarization，自动替换安装体验可能不稳定。
 
 ## 目录说明
 

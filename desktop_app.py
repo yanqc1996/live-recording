@@ -22,12 +22,14 @@ from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
 from desktop_license import LicenseManager
 from desktop_media_library import MediaLibrary
+from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
 
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 PROJECT_ROOT = Path(os.environ.get("LIVERECORDER_DATA_ROOT", Path(__file__).resolve().parent)).resolve()
 STATIC_FILE = BUNDLE_ROOT / "desktop" / "index.html"
+APP_VERSION = os.environ.get("BOLU_APP_VERSION") or os.environ.get("npm_package_version") or "0.1.0"
 
 
 class LazyDouyinInteraction:
@@ -90,6 +92,7 @@ class AppState:
         self.anchors = AnchorStore(PROJECT_ROOT / "config" / "anchors.json")
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
         self.license = LicenseManager(PROJECT_ROOT / "config" / "license.json")
+        self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._last_recording_candidate: dict | None = None
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
@@ -253,6 +256,7 @@ def make_handler(state: AppState, token: str):
                         "baidupan": state.uploads.status(),
                         "auth": {"douyin_connected": state.recorder.has_douyin_session},
                         "license": state.license.status(),
+                        "update": state.updates.status(),
                         "interaction": state.interaction.status(),
                         "work_pull": state.work_pull.status(),
                         "recordings": state.recordings(),
@@ -358,6 +362,12 @@ def make_handler(state: AppState, token: str):
                     self._json({"license": state.license.activate(str(body.get("code", "")))})
                 elif path == "/api/license/deactivate":
                     self._json({"license": state.license.deactivate()})
+                elif path == "/api/update/settings":
+                    self._json({"update": state.updates.save_config(str(body.get("manifest_url", "")))})
+                elif path == "/api/update/check":
+                    self._json(state.updates.check(str(body.get("manifest_url", ""))))
+                elif path == "/api/update/open-download":
+                    self._json(state.updates.open_download(str(body.get("url", ""))))
                 elif path == "/api/baidupan/settings":
                     state.require_license()
                     self._json({"baidupan": state.uploads.save_config(body), "status": state.uploads.status()})
