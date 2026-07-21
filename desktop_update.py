@@ -14,8 +14,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/yanqc1996/live-recording/main/release/update.json"
+
 DEFAULT_CONFIG = {
-    "manifest_url": "",
+    "manifest_url": DEFAULT_MANIFEST_URL,
     "last_checked_at": 0,
     "last_result": {},
 }
@@ -67,7 +69,10 @@ class UpdateManager:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                return {**DEFAULT_CONFIG, **data}
+                config = {**DEFAULT_CONFIG, **data}
+                if not str(config.get("manifest_url") or "").strip():
+                    config["manifest_url"] = DEFAULT_MANIFEST_URL
+                return config
         except Exception:
             pass
         return dict(DEFAULT_CONFIG)
@@ -90,14 +95,14 @@ class UpdateManager:
 
     def save_config(self, manifest_url: str) -> dict[str, Any]:
         config = self._load()
-        config["manifest_url"] = _safe_url(manifest_url)
+        config["manifest_url"] = _safe_url(manifest_url) or DEFAULT_MANIFEST_URL
         return self._save(config)
 
     def check(self, manifest_url: str = "") -> dict[str, Any]:
         config = self._load()
-        url = _safe_url(manifest_url or str(config.get("manifest_url") or ""))
+        url = _safe_url(manifest_url or str(config.get("manifest_url") or "") or DEFAULT_MANIFEST_URL)
         if not url:
-            raise ValueError("请先填写远程更新 JSON 地址")
+            raise ValueError("没有可用的远程更新 JSON 地址")
 
         request = urllib.request.Request(
             url,

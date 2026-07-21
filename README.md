@@ -105,6 +105,36 @@ macOS 用户：
 首次启动引导.txt
 ```
 
+### macOS 提示“已损坏，无法打开”的处理
+
+如果安装包从 GitHub、网盘或浏览器下载，macOS 可能会给文件添加互联网下载隔离标记。当前版本尚未做 Apple Developer ID 签名和公证，因此有些机器会提示：
+
+```text
+“播录助手” is damaged and can't be opened. You should move it to the Trash.
+```
+
+这通常不是安装包真的损坏，而是 macOS Gatekeeper 拦截。处理方式：
+
+1. 先把 `播录助手.app` 拖入“应用程序”
+2. 打开“终端”
+3. 执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/播录助手.app
+```
+
+4. 再右键点击 `播录助手.app`，选择“打开”
+
+如果是 DMG 文件本身打不开，可以先对下载的 DMG 执行：
+
+```bash
+xattr -d com.apple.quarantine ~/Downloads/播录助手-0.1.0-arm64.dmg
+```
+
+然后重新双击打开 DMG。
+
+正式对外大量售卖时，建议补 Apple Developer ID 签名和 notarization 公证，这样用户下载后可以更接近普通商业软件的打开体验。
+
 ## 授权码生成
 
 用户把软件首页显示的设备码发给卖家后，在项目目录执行：
@@ -254,7 +284,13 @@ dist/
 release/update.example.json
 ```
 
-用户在软件里的“软件更新”区域填写该 JSON 地址后，可以点击“检查更新”。如果 `version` 高于当前 `package.json` 版本，软件会显示发现新版本，并允许用户点击“打开下载”。
+软件已内置默认更新地址：
+
+```text
+https://raw.githubusercontent.com/yanqc1996/live-recording/main/release/update.json
+```
+
+用户可以直接在“软件更新”区域点击“检查更新”。如果 `version` 高于当前 `package.json` 版本，软件会显示发现新版本，并允许用户点击“打开下载”。如果后续更换仓库或迁移到 OSS/COS，可以在软件界面里手动替换远程更新 JSON 地址。
 
 可用于存放 `update.json` 的位置：
 
@@ -265,6 +301,100 @@ release/update.example.json
 - 自己的服务器
 
 第一版不建议做全自动更新，因为当前 macOS 包尚未做 Apple Developer ID 签名和 notarization，自动替换安装体验可能不稳定。
+
+## GitHub 发版流程
+
+如果你先用 GitHub 管理版本和安装包，可以按下面流程操作。
+
+### 1. 修改版本号
+
+在 `package.json` 中修改版本号，例如：
+
+```json
+{
+  "version": "0.1.1"
+}
+```
+
+### 2. 重新打包
+
+```bash
+npm run desktop:dist
+```
+
+macOS 会生成：
+
+```text
+dist/播录助手-0.1.1-arm64.dmg
+dist/播录助手-0.1.1-arm64-mac.zip
+```
+
+### 3. 准备 GitHub Release 文件
+
+执行：
+
+```bash
+python3 scripts/prepare_release.py \
+  --repo 你的GitHub用户名/你的仓库名 \
+  --notes "这次更新的说明"
+```
+
+例如：
+
+```bash
+python3 scripts/prepare_release.py \
+  --repo yanqc1996/live-recording \
+  --notes "修复作品拉取稳定性，优化音频自动重连。"
+```
+
+如果也想把闲鱼宣传素材包放进 GitHub Release：
+
+```bash
+python3 scripts/prepare_release.py \
+  --repo yanqc1996/live-recording \
+  --notes "修复作品拉取稳定性，优化音频自动重连。" \
+  --include-xianyu-assets
+```
+
+脚本会生成：
+
+```text
+release/播录助手-v版本号-mac-arm64-用户交付包/
+release/播录助手-v版本号-mac-arm64-用户交付包.zip
+release/update.json
+release/github-release/v版本号/
+```
+
+`release/github-release/v版本号/` 里的文件就是建议上传到 GitHub Release 的文件。
+
+### 4. 创建 GitHub Release
+
+在 GitHub 仓库页面：
+
+1. 进入 `Releases`
+2. 点击 `Draft a new release`
+3. Tag 填 `v版本号`，例如 `v0.1.1`
+4. Release title 填 `播录助手 v0.1.1`
+5. 上传 `release/github-release/v0.1.1/` 里的文件
+6. 发布 Release
+
+### 5. 提交 update.json
+
+`release/update.json` 需要提交到仓库，例如：
+
+```bash
+git add release/update.json README.md scripts/prepare_release.py
+git commit -m "Add semi-auto update release workflow"
+git push
+```
+
+当前软件已默认内置这个地址：
+
+```text
+https://raw.githubusercontent.com/yanqc1996/live-recording/main/release/update.json
+```
+
+如果你的仓库地址变了，需要同步修改 `desktop_update.py` 里的默认地址，或者让用户在软件界面里手动替换。国内用户访问 GitHub 可能不稳定，后续正式售卖建议把 `update.json` 和安装包迁到阿里云 OSS / 腾讯云 COS 等国内源。
 
 ## 目录说明
 
@@ -286,7 +416,8 @@ release/update.example.json
 │   ├── build_desktop_runtime.py   # 构建内置运行时
 │   ├── generate_license.py        # 生成买断授权码
 │   ├── upload_to_baidu_netdisk.py # 百度网盘上传脚本
-│   └── generate_xianyu_assets.cjs # 生成闲鱼宣传图
+│   ├── generate_xianyu_assets.cjs # 生成闲鱼宣传图
+│   └── prepare_release.py         # 整理 GitHub Release 发版文件
 ├── packaging/                     # 打包默认配置
 ├── release/                       # 用户交付包和上架素材
 ├── config/                        # 本地配置
