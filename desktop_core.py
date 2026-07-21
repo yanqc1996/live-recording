@@ -1,0 +1,354 @@
+"""Local configuration and process control used by the visual recorder UI."""
+
+from __future__ import annotations
+
+import configparser
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+
+TEXT_ENCODING = "utf-8-sig"
+RECORDING_SECTION = "录制设置"
+
+SETTING_KEYS = {
+    "output_path": "直播保存路径(不填则默认)",
+    "format": "视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频",
+    "quality": "原画|超清|高清|标清|流畅",
+    "split_enabled": "分段录制是否开启",
+    "split_seconds": "视频分段时间(秒)",
+    "convert_to_mp4": "录制完成后自动转为mp4格式",
+    "delete_original": "追加格式后删除原文件",
+    "use_proxy": "是否使用代理ip(是/否)",
+    "proxy_address": "代理地址",
+    "check_interval": "循环时间(秒)",
+}
+
+DEFAULT_SETTINGS = {
+    "output_path": "",
+    "format": "TS",
+    "quality": "原画",
+    "split_enabled": True,
+    "split_seconds": 1800,
+    "convert_to_mp4": True,
+    "delete_original": True,
+    "use_proxy": False,
+    "proxy_address": "",
+    "check_interval": 300,
+}
+
+BOOL_FIELDS = {"split_enabled", "convert_to_mp4", "delete_original", "use_proxy"}
+INT_FIELDS = {"split_seconds", "check_interval"}
+ALLOWED_FORMATS = {"TS", "MKV", "FLV", "MP4", "MP3", "M4A", "MP3音频", "M4A音频"}
+ALLOWED_QUALITIES = {"原画", "超清", "高清", "标清", "流畅"}
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".desktop.tmp")
+    temporary.write_text(content, encoding=TEXT_ENCODING)
+    os.replace(temporary, path)
+
+
+@dataclass
+class RoomEntry:
+    line: str
+    active: bool
+
+    @property
+    def value(self) -> str:
+        return self.line[1:].lstrip() if self.line.startswith("#") else self.line
+
+    def to_dict(self, index: int) -> dict:
+        return {"id": index, "value": self.value, "active": self.active}
+
+
+class RoomStore:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.RLock()
+
+    def _all_lines(self) -> list[str]:
+        if not self.path.exists():
+            return []
+        return self.path.read_text(encoding=TEXT_ENCODING, errors="ignore").splitlines()
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            entries = []
+            for line in self._all_lines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("##"):
+                    continue
+                value = stripped[1:].lstrip() if stripped.startswith("#") else stripped
+                if "http://" not in value and "https://" not in value:
+                    continue
+                entries.append(RoomEntry(stripped, not stripped.startswith("#")))
+            return [entry.to_dict(index) for index, entry in enumerate(entries)]
+
+    def _editable_positions(self, lines: list[str]) -> list[int]:
+        positions = []
+        for index, line in enumerate(lines):
+            value = line.strip().lstrip("#").lstrip()
+            if "http://" in value or "https://" in value:
+                positions.append(index)
+        return positions
+
+    def add(self, value: str) -> None:
+        value = value.strip()
+        if not re.search(r"https?://[^\s]+", value):
+            raise ValueError("请输入有效的 http:// 或 https:// 直播间地址")
+        with self._lock:
+            lines = self._all_lines()
+            if any(line.strip().lstrip("#").lstrip() == value for line in lines):
+                raise ValueError("该直播间已经存在")
+            lines.append(value)
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+
+    def upsert_active(self, value: str) -> dict:
+        value = value.strip()
+        if not re.search(r"https?://[^\s]+", value):
+            raise ValueError("请输入有效的 http:// 或 https:// 直播间地址")
+        with self._lock:
+            lines = self._all_lines()
+            positions = self._editable_positions(lines)
+            for room_id, position in enumerate(positions):
+                current = lines[position].strip().lstrip("#").lstrip()
+                if current == value:
+                    lines[position] = value
+                    _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+                    return {"id": room_id, "value": value, "active": True, "created": False}
+            lines.append(value)
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+            return {"id": len(positions), "value": value, "active": True, "created": True}
+
+    def set_active(self, room_id: int, active: bool) -> None:
+        with self._lock:
+            lines = self._all_lines()
+            positions = self._editable_positions(lines)
+            if room_id < 0 or room_id >= len(positions):
+                raise IndexError("直播间不存在")
+            position = positions[room_id]
+            value = lines[position].strip().lstrip("#").lstrip()
+            lines[position] = value if active else f"#{value}"
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+
+    def delete(self, room_id: int) -> None:
+        with self._lock:
+            lines = self._all_lines()
+            positions = self._editable_positions(lines)
+            if room_id < 0 or room_id >= len(positions):
+                raise IndexError("直播间不存在")
+            del lines[positions[room_id]]
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+
+
+class SettingsStore:
+    """Update selected INI values while retaining comments and unrelated secrets."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.RLock()
+
+    def load(self) -> dict:
+        values = dict(DEFAULT_SETTINGS)
+        parser = configparser.RawConfigParser(strict=False)
+        parser.optionxform = str
+        if self.path.exists():
+            parser.read(self.path, encoding=TEXT_ENCODING)
+        for field, key in SETTING_KEYS.items():
+            raw = parser.get(RECORDING_SECTION, key, fallback=None)
+            if raw is None:
+                continue
+            if field in BOOL_FIELDS:
+                values[field] = raw.strip() == "是"
+            elif field in INT_FIELDS:
+                try:
+                    values[field] = int(raw)
+                except ValueError:
+                    pass
+            else:
+                values[field] = raw.strip()
+        values["format"] = str(values["format"]).upper()
+        return values
+
+    def save(self, supplied: dict) -> dict:
+        values = self._validate({**self.load(), **supplied})
+        replacements = {}
+        for field, key in SETTING_KEYS.items():
+            value = values[field]
+            replacements[key] = "是" if field in BOOL_FIELDS and value else "否" if field in BOOL_FIELDS else str(value)
+        # The desktop MVP deliberately never executes upload/post-processing scripts.
+        replacements["是否录制完成后执行自定义脚本"] = "否"
+        with self._lock:
+            text = self.path.read_text(encoding=TEXT_ENCODING) if self.path.exists() else ""
+            lines = text.splitlines()
+            section_start = next((i for i, line in enumerate(lines) if line.strip() == f"[{RECORDING_SECTION}]"), None)
+            if section_start is None:
+                lines.extend(([f"[{RECORDING_SECTION}]"] if not lines else ["", f"[{RECORDING_SECTION}]"]))
+                section_start = len(lines) - 1
+            section_end = next(
+                (i for i in range(section_start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines)
+            )
+            found = set()
+            for index in range(section_start + 1, section_end):
+                if "=" not in lines[index] or lines[index].lstrip().startswith(('#', ';')):
+                    continue
+                key = lines[index].split("=", 1)[0].strip()
+                if key in replacements:
+                    lines[index] = f"{key} = {replacements[key]}"
+                    found.add(key)
+            for key, value in replacements.items():
+                if key not in found:
+                    lines.insert(section_end, f"{key} = {value}")
+                    section_end += 1
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+        return values
+
+    @staticmethod
+    def _validate(values: dict) -> dict:
+        if str(values["format"]).upper() not in ALLOWED_FORMATS:
+            raise ValueError("不支持的视频格式")
+        values["format"] = str(values["format"]).upper()
+        if values["quality"] not in ALLOWED_QUALITIES:
+            raise ValueError("不支持的录制画质")
+        for field in INT_FIELDS:
+            try:
+                values[field] = int(values[field])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{field} 必须是整数") from exc
+            if values[field] < 1:
+                raise ValueError(f"{field} 必须大于 0")
+        for field in BOOL_FIELDS:
+            values[field] = bool(values[field])
+        values["output_path"] = str(values["output_path"]).strip()
+        values["proxy_address"] = str(values["proxy_address"]).strip()
+        return values
+
+
+class RecorderProcess:
+    def __init__(self, project_root: Path, on_log: Callable[[str], None] | None = None):
+        self.project_root = project_root
+        self.on_log = on_log
+        self.process: subprocess.Popen[str] | None = None
+        self.started_at: float | None = None
+        self.logs: deque[str] = deque(maxlen=1200)
+        self._log_offset = 0
+        self._douyin_cookie = ""
+        self._lock = threading.RLock()
+
+    def set_douyin_cookie(self, cookie: str) -> None:
+        """Keep the browser session in memory and pass it only to the recorder child."""
+        with self._lock:
+            self._douyin_cookie = cookie.strip()
+
+    @property
+    def has_douyin_session(self) -> bool:
+        return bool(self._douyin_cookie)
+
+    def _append_log(self, line: str) -> None:
+        line = line.rstrip()
+        if line:
+            if self.logs.maxlen and len(self.logs) == self.logs.maxlen:
+                self._log_offset += 1
+            self.logs.append(line)
+            if self.on_log:
+                self.on_log(line)
+
+    def preflight(self) -> list[str]:
+        missing = []
+        if shutil.which("ffmpeg") is None and not (self.project_root / "ffmpeg.exe").exists():
+            missing.append("FFmpeg")
+        if shutil.which("node") is None:
+            missing.append("Node.js")
+        return missing
+
+    def start(self) -> None:
+        with self._lock:
+            if self.is_running:
+                raise RuntimeError("录制服务已经在运行")
+            missing = self.preflight()
+            if missing:
+                raise RuntimeError("缺少运行依赖：" + "、".join(missing))
+            kwargs: dict = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            environment = os.environ.copy()
+            environment["PYTHONUNBUFFERED"] = "1"
+            if self._douyin_cookie:
+                environment["LIVERECORDER_DOUYIN_COOKIE"] = self._douyin_cookie
+            packaged_engine = os.environ.get("LIVERECORDER_ENGINE_EXECUTABLE", "").strip()
+            command = [packaged_engine, "--engine"] if packaged_engine else [
+                sys.executable, "-u", str(self.project_root / "main.py")
+            ]
+            self.process = subprocess.Popen(
+                command,
+                cwd=self.project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                bufsize=1,
+                env=environment,
+                **kwargs,
+            )
+            self.started_at = time.time()
+            self._append_log("桌面控制台：录制服务已启动")
+            threading.Thread(target=self._read_output, daemon=True).start()
+
+    def _read_output(self) -> None:
+        process = self.process
+        if not process or not process.stdout:
+            return
+        for line in process.stdout:
+            self._append_log(line)
+        code = process.wait()
+        self._append_log(f"桌面控制台：录制服务已退出（代码 {code}）")
+
+    def stop(self) -> None:
+        with self._lock:
+            process = self.process
+            if not process or process.poll() is not None:
+                return
+            self._append_log("桌面控制台：正在安全停止并封装视频…")
+            try:
+                if os.name == "nt":
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    os.killpg(process.pid, signal.SIGINT)
+                process.wait(timeout=12)
+            except (subprocess.TimeoutExpired, ProcessLookupError):
+                if process.poll() is None:
+                    if os.name == "nt":
+                        process.terminate()
+                    else:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=5)
+
+    @property
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def status(self) -> dict:
+        return {
+            "running": self.is_running,
+            "pid": self.process.pid if self.is_running and self.process else None,
+            "started_at": self.started_at if self.is_running else None,
+            "missing_dependencies": self.preflight(),
+        }
+
+    def log_snapshot(self, after: int = 0) -> dict:
+        lines = list(self.logs)
+        start = max(0, min(after - self._log_offset, len(lines)))
+        return {"lines": lines[start:], "cursor": self._log_offset + len(lines)}

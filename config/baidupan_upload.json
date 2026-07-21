@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "auto_upload": false,
+  "remote_dir": "/apps/LiveRecorder",
+  "group_by_anchor": true,
+  "delete_after_upload": false,
+  "wait_timeout": 900,
+  "retries": 3,
+  "bypy_bin": "__python_module_bypy__"
+}

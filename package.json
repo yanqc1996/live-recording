@@ -1,0 +1,66 @@
+{
+  "name": "live-recorder-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "播录助手本地桌面应用",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "desktop": "electron .",
+    "desktop:runtime": "python3 scripts/build_desktop_runtime.py",
+    "desktop:pack": "npm run desktop:runtime && electron-builder --dir",
+    "desktop:dist": "npm run desktop:runtime && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.boluzhushou.desktop",
+    "productName": "播录助手",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/desktop-runtime/LiveRecorderRuntime",
+        "to": "runtime/LiveRecorderRuntime"
+      },
+      {
+        "from": "build/desktop-runtime/bin",
+        "to": "runtime/bin"
+      },
+      {
+        "from": "packaging/config.default.ini",
+        "to": "defaults/config.default.ini"
+      },
+      {
+        "from": "首次启动引导.txt",
+        "to": "docs/首次启动引导.txt"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "assets/app-icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "assets/app-icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "jsrsasign": "^11.1.3"
+  }
+}

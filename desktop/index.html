@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>播录助手</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b0d11;--bg-glow:#172238;--header:#0d1015cc;--panel:#14171d;--panel2:#12151a;--line:#282d36;--muted:#8c94a3;--text:#f4f6f8;--control:#20242c;--control-border:#303640;--field:#0d1015;--log-bg:#090b0e;--green:#4bd28f;--red:#ff6b6b;--blue:#6aa9ff}
+    body[data-theme=midnight]{--bg:#08111f;--bg-glow:#163b71;--header:#091425cc;--panel:#111d2d;--panel2:#0c1624;--line:#26384f;--control:#17263a;--control-border:#304866;--field:#091421;--log-bg:#050c15;--blue:#72b7ff}
+    body[data-theme=forest]{--bg:#09140f;--bg-glow:#174b31;--header:#0a1510cc;--panel:#111f18;--panel2:#0d1812;--line:#26392e;--control:#1a2d22;--control-border:#315241;--field:#09140f;--log-bg:#050b08;--green:#62e19d;--blue:#7ed0b1}
+    body[data-theme=wine]{--bg:#160912;--bg-glow:#5b163d;--header:#170912cc;--panel:#24111d;--panel2:#1b0d16;--line:#43243a;--control:#321827;--control-border:#5b314c;--field:#160912;--log-bg:#0e050b;--green:#ffcf7a;--blue:#ff8fc4}
+    body[data-theme=light]{color-scheme:light;--bg:#f4f7fb;--bg-glow:#cfe2ff;--header:#ffffffdd;--panel:#ffffff;--panel2:#f7f9fd;--line:#d9e1ec;--muted:#667085;--text:#111827;--control:#edf2f7;--control-border:#ccd6e2;--field:#ffffff;--log-bg:#f8fafc;--green:#15965d;--red:#d04444;--blue:#2563eb}
+    body[data-theme=white]{color-scheme:light;--bg:#ffffff;--bg-glow:#ffffff;--header:#fffffff2;--panel:#ffffff;--panel2:#ffffff;--line:#e5e7eb;--muted:#6b7280;--text:#111827;--control:#f3f4f6;--control-border:#d1d5db;--field:#ffffff;--log-bg:#fafafa;--green:#15965d;--red:#d04444;--blue:#2563eb}
+    body[data-theme=white] .panel{box-shadow:0 16px 50px #11182712}
+    body[data-theme=white] .room,body[data-theme=white] .event,body[data-theme=white] .rank-row{border-color:var(--line)}
+    body[data-theme=white] .avatar{background:linear-gradient(145deg,#f3f4f6,#e5e7eb)}
+    body[data-theme=white] .chat-feed,body[data-theme=white] .rank-list,body[data-theme=white] .stat{background:var(--log-bg)}
+    body[data-theme=white] .event-name,body[data-theme=white] .event-content,body[data-theme=white] .rank-no{color:var(--text)}
+    body[data-theme=white] .event.system .event-content{color:var(--muted)}
+    body[data-theme=white] .event.error .event-content,body[data-theme=white] .danger{color:var(--red)}
+    body[data-theme=white] .rank-avatar{background:var(--control)}
+    body[data-theme=white] .pill,body[data-theme=white] .stat{border-color:var(--control-border)}
+    body[data-theme=white] .toast{background:#ffffff;border-color:var(--control-border);box-shadow:0 12px 30px #11182720}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 8% 0,var(--bg-glow) 0,transparent 30%),var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button,input,select,textarea{font:inherit}.app{min-height:100vh;display:grid;grid-template-rows:64px 1fr}
+    header{display:flex;align-items:center;gap:14px;padding:0 24px;border-bottom:1px solid var(--line);background:var(--header);backdrop-filter:blur(16px);position:sticky;top:0;z-index:3}
+    .mark{width:34px;height:34px;border-radius:11px;background:linear-gradient(145deg,#6aa9ff,#806aff);display:grid;place-items:center;box-shadow:0 8px 24px #6a8fff35}.mark:after{content:"";width:10px;height:10px;border-radius:50%;background:white}
+    h1{font-size:16px;margin:0}.subtitle{color:var(--muted);font-size:12px}.tabs{display:flex;gap:6px;margin-left:10px}.tab{padding:7px 10px;border-radius:8px;background:transparent;color:var(--muted)}.tab.active{background:var(--control);color:var(--text);border-color:var(--control-border)}.prefs{display:flex;gap:8px;margin-left:auto}.prefs select{width:auto;padding:7px 9px}.status{display:flex;align-items:center;gap:8px;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:#606672}.dot.on{background:var(--green);box-shadow:0 0 14px var(--green)}
+    main{display:grid;grid-template-columns:minmax(420px,1.1fr) minmax(360px,.9fr);gap:16px;padding:16px;max-width:1500px;width:100%;margin:auto}
+    .stack{display:grid;gap:16px;align-content:start}.panel{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 16px 50px #0004}
+    .panel-head{height:54px;padding:0 16px;display:flex;align-items:center;border-bottom:1px solid var(--line)}.panel-head h2{font-size:14px;margin:0}.count{margin-left:8px;color:var(--muted);font-size:12px}.panel-actions{margin-left:auto;display:flex;gap:8px}
+    button{color:var(--text);background:var(--control);border:1px solid var(--control-border);border-radius:9px;padding:8px 12px;cursor:pointer}button:hover{filter:brightness(1.08)}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#eaf2ff;color:#10141b;border-color:#fff;font-weight:650}.primary:hover{background:white}.danger{color:#ff8b8b}.quiet{padding:6px 9px;background:transparent}
+    .rooms{max-height:330px;overflow:auto}.room{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid #22262e}.room:last-child{border:0}.room.off .room-url{color:#69717f;text-decoration:line-through}.room-url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.room-meta{color:var(--muted);font-size:11px;margin-top:3px}.switch{position:relative;width:34px;height:20px;border-radius:20px;background:#353a44;cursor:pointer}.switch:after{content:"";position:absolute;width:14px;height:14px;border-radius:50%;background:#fff;left:3px;top:3px;transition:.18s}.switch.on{background:var(--green)}.switch.on:after{left:17px}.empty{padding:36px;text-align:center;color:var(--muted)}
+    .add{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}input,select,textarea{width:100%;background:var(--field);border:1px solid var(--control-border);color:var(--text);border-radius:9px;padding:9px 10px;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px #6aa9ff20}
+    .settings{padding:15px;display:grid;grid-template-columns:1fr 1fr;gap:13px}.field label{display:block;color:var(--muted);font-size:12px;margin:0 0 6px}.field.wide{grid-column:1/-1}.check{display:flex;align-items:center;gap:8px;color:var(--text)}.check input{width:auto;accent-color:var(--green)}.input-row{display:flex;gap:8px}.input-row button{white-space:nowrap}
+    .account{padding:16px;display:flex;align-items:center;gap:13px}.avatar{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,#252b35,#171b22);display:grid;place-items:center;font-weight:750}.account-copy{min-width:0}.account-title{font-weight:650}.account-desc{color:var(--muted);font-size:12px;margin-top:3px}.account-actions{margin-left:auto;display:flex;gap:8px}.connected{color:var(--green)}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:.02em}.license-code{min-height:80px;resize:vertical}.locked{color:#ffd37a}
+    .runbar{padding:16px;display:flex;gap:10px}.runbar button{height:42px;flex:1}.hint{padding:0 16px 14px;color:var(--muted);font-size:12px}.hint strong{color:var(--green);font-weight:500}
+    .logs{height:240px;background:var(--log-bg);padding:12px 14px;overflow:auto;color:var(--muted);font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}.file-list{max-height:260px;overflow:auto}.file{padding:11px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px}.file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-size{margin-left:auto;color:var(--muted);white-space:nowrap}
+    .interaction-main{grid-template-columns:minmax(360px,.72fr) minmax(520px,1.28fr)}.work-main,.library-main{grid-template-columns:minmax(420px,.85fr) minmax(460px,1.15fr)}.hidden{display:none!important}.chat-feed{height:520px;overflow:auto;background:#090b0e}.event{padding:10px 14px;border-bottom:1px solid #1f242c}.event-meta{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}.event-name{color:#dbe6f4;font-weight:650}.event-content{margin-top:4px;color:#eef3f8;word-break:break-word}.event.system .event-content{color:#9fb2c8}.event.error .event-content{color:#ff9c9c}.event.work-muted{opacity:.35}.work-mode .chat-feed{height:460px;background:var(--field)}.work-mode .event{padding:7px 12px}.work-mode .event-meta{display:none}.work-mode .event-content{margin:0;color:var(--muted);font-size:12px;line-height:1.45}.work-mode .event.chat .event-content{color:var(--text);font-size:13px}.work-mode .event.work-hidden{display:none}.work-mode .rank-list{display:none}.work-mode .rank-work-hint{display:block!important}.sendbar{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}.audio-box{padding:14px 16px;display:grid;gap:10px}.audio-box audio{width:100%}.room-select{padding:15px;display:grid;gap:12px}.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #303640;border-radius:999px;padding:4px 8px;color:var(--muted);font-size:12px}.rank-list{max-height:310px;overflow:auto;background:#090b0e}.rank-work-hint{display:none}.rank-row{display:grid;grid-template-columns:34px 34px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #1f242c}.rank-no{color:#dbe6f4;font-weight:750;text-align:center}.rank-avatar{width:34px;height:34px;border-radius:50%;background:#20242c;object-fit:cover}.rank-user{min-width:0}.rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rank-id{color:var(--muted);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rank-score{color:#ffd37a;font-weight:700;white-space:nowrap}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 15px 15px}.stat{background:#0d1015;border:1px solid #252b34;border-radius:12px;padding:10px}.stat b{display:block;font-size:20px}.stat span{color:var(--muted);font-size:12px}.anchor-list{max-height:560px;overflow:auto}.anchor-row{padding:12px 15px;border-bottom:1px solid var(--line);cursor:pointer}.anchor-row:hover,.anchor-row.active{background:color-mix(in srgb,var(--control) 70%,transparent)}.anchor-title{display:flex;gap:8px;align-items:center}.anchor-title b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.anchor-meta{margin-top:5px;color:var(--muted);font-size:12px}.media-files{max-height:560px;overflow:auto}.media-file{padding:11px 15px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}.media-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.media-file-meta{color:var(--muted);font-size:12px;margin-top:3px}.tag{font-size:11px;color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:2px 6px}
+    .toast{position:fixed;right:20px;bottom:20px;background:#242a33;border:1px solid #39414e;border-radius:11px;padding:11px 15px;box-shadow:0 12px 30px #0008;transform:translateY(80px);opacity:0;transition:.2s;z-index:5}.toast.show{transform:none;opacity:1}.toast.error{color:#ff9c9c}
+    @media(max-width:900px){main{grid-template-columns:1fr}.settings{grid-template-columns:1fr}.field.wide{grid-column:auto}}
+  </style>
+</head>
+<body>
+<div class="app">
+  <header><div class="mark"></div><div><h1>播录助手</h1><div class="subtitle">所有录制仅保存在本机</div></div><div class="tabs"><button id="tabAnchors" class="tab">主播库</button><button id="tabRecord" class="tab active">本地录制</button><button id="tabInteract" class="tab">直播互动</button><button id="tabWorks" class="tab">作品拉取</button><button id="tabLibrary" class="tab">媒体库</button></div><div class="prefs"><select id="themeSelect" title="背景色"><option value="dark">深色</option><option value="midnight">午夜蓝</option><option value="forest">森林绿</option><option value="wine">酒红</option><option value="light">浅色</option><option value="white">白色</option></select><select id="languageSelect" title="语言"><option value="zh">中文</option><option value="en">English</option></select></div><div class="status"><span id="statusText">正在连接</span><span id="statusDot" class="dot"></span></div></header>
+  <main id="anchorsView" class="library-main hidden">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>主播库</h2><span id="anchorCount" class="count">0</span></div>
+        <div class="settings">
+          <div class="field"><label>主播名称（可选）</label><input id="anchorName" placeholder="主播名"></div>
+          <div class="field wide"><label>主页 / 分享 / 直播间地址</label><input id="anchorUrl" placeholder="https://www.douyin.com/user/..."></div>
+          <div class="field wide"><label>直播间地址（可选，自动解析失败时使用）</label><input id="anchorLiveUrl" placeholder="https://live.douyin.com/..."></div>
+        </div>
+        <div class="runbar"><button id="addAnchor" class="primary">添加主播</button><button id="checkAnchors" class="quiet">巡检全部</button><button id="refreshAnchors" class="quiet">刷新</button></div>
+        <div class="room-select"><div class="input-row"><select id="anchorCheckAuto"><option value="0">手动巡检</option><option value="60">每 1 分钟</option><option value="300">每 5 分钟</option><option value="600">每 10 分钟</option></select><span id="anchorCheckStatus" class="pill">未巡检</span></div></div>
+        <div id="anchorsList" class="anchor-list"><div class="empty">添加主播后统一管理录制、互动、作品和媒体库</div></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2 id="anchorDetailTitle">选择一个主播</h2><span id="anchorDetailStatus" class="count"></span></div>
+        <div id="anchorDetail" class="room-select"><div class="empty">选择左侧主播后操作</div></div>
+      </section>
+    </div>
+  </main>
+  <main id="recordView">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>软件授权</h2><span id="licenseBadge" class="count">未激活</span></div>
+        <div class="settings">
+          <div class="field wide"><label>当前设备码</label><div class="input-row"><input id="licenseDeviceId" class="mono" readonly><button id="copyDeviceId" type="button">复制</button></div></div>
+          <div class="field wide"><label>买断授权码</label><textarea id="licenseCode" class="license-code" placeholder="粘贴你收到的授权码"></textarea></div>
+        </div>
+        <div class="runbar"><button id="activateLicense" class="primary">激活授权</button><button id="deactivateLicense" class="quiet danger">清除本机授权</button></div>
+        <div id="licenseHint" class="hint">未激活时只能查看设备码和基础设置，录制/互动/作品拉取等功能会被锁定。</div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>抖音账号</h2><span id="authBadge" class="count">检查中</span></div>
+        <div class="account"><div class="avatar">抖</div><div class="account-copy"><div id="authTitle" class="account-title">尚未连接</div><div id="authDesc" class="account-desc">扫码登录后自动同步录制所需会话，无需填写 Cookie</div></div><div class="account-actions"><button id="loginDouyin" class="primary">登录抖音</button><button id="logoutDouyin" class="quiet danger" hidden>退出</button></div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>直播间</h2><span id="roomCount" class="count"></span></div>
+        <div id="rooms" class="rooms"></div>
+        <form id="addForm" class="add"><input id="roomInput" placeholder="粘贴直播间地址，也可带画质前缀"><button>添加</button></form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>运行日志</h2><div class="panel-actions"><button id="clearLogs" class="quiet">清空显示</button></div></div>
+        <div id="logs" class="logs">等待启动录制服务…</div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>本地录制设置</h2><div class="panel-actions"><button id="saveSettings">保存设置</button></div></div>
+        <div class="settings">
+          <div class="field wide"><label>录像保存目录（留空使用项目 downloads）</label><div class="input-row"><input id="output_path" placeholder="/Users/you/Movies/LiveRecorder"><button id="chooseOutput" type="button">选择目录</button></div></div>
+          <div class="field"><label>画质</label><select id="quality"><option>原画</option><option>超清</option><option>高清</option><option>标清</option><option>流畅</option></select></div>
+          <div class="field"><label>保存格式</label><select id="format"><option>TS</option><option>MP4</option><option>MKV</option><option>FLV</option><option>MP3</option><option>M4A</option></select></div>
+          <div class="field"><label>检测间隔（秒）</label><input id="check_interval" type="number" min="1"></div>
+          <div class="field"><label>分段时长（秒）</label><input id="split_seconds" type="number" min="1"></div>
+          <label class="check"><input id="split_enabled" type="checkbox">启用分段录制</label>
+          <label class="check"><input id="convert_to_mp4" type="checkbox">录完转为 MP4</label>
+          <label class="check"><input id="delete_original" type="checkbox">转换后删除原文件</label>
+          <label class="check"><input id="use_proxy" type="checkbox">使用代理</label>
+          <div class="field wide"><label>代理地址</label><input id="proxy_address" placeholder="127.0.0.1:7890"></div>
+        </div>
+        <div class="runbar"><button id="start" class="primary">开始本地录制</button><button id="stop" class="danger" disabled>停止并保存</button></div>
+        <div id="dependencyHint" class="hint">默认只保存在本机；开启百度网盘自动上传后，录制完成会进入上传队列。</div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>百度网盘上传</h2><span id="baidupanStatus" class="count">未开启</span><div class="panel-actions"><button id="saveBaidupan">保存</button></div></div>
+        <div class="settings">
+          <label class="check"><input id="baiduEnabled" type="checkbox">启用上传能力</label>
+          <label class="check"><input id="baiduAutoUpload" type="checkbox">录制完成后自动上传</label>
+          <label class="check"><input id="baiduGroupByAnchor" type="checkbox">按主播创建网盘目录</label>
+          <label class="check"><input id="baiduDeleteAfterUpload" type="checkbox">上传成功后删除本地文件</label>
+          <div class="field wide"><label>百度网盘远程目录</label><input id="baiduRemoteDir" placeholder="/apps/LiveRecorder"></div>
+          <div class="field"><label>等待文件稳定（秒）</label><input id="baiduWaitTimeout" type="number" min="10"></div>
+          <div class="field"><label>失败重试次数</label><input id="baiduRetries" type="number" min="1" max="10"></div>
+          <div class="field wide"><label>bypy 命令</label><input id="baiduBypyBin" placeholder="__python_module_bypy__"></div>
+        </div>
+        <div class="runbar"><button id="checkBaidupan" class="quiet">检测授权</button><button id="uploadLatest" class="primary">上传最近录像</button><button id="clearUploadFinished" class="quiet">清理已结束</button></div>
+        <div id="baidupanHint" class="hint">打包版会内置 bypy，不需要用户安装 Python 或命令行工具；首次使用只需完成百度网盘账号授权。</div>
+        <div id="uploadQueue" class="file-list"><div class="empty">暂无上传任务</div></div>
+        <div id="baidupanLogs" class="logs">等待上传任务…</div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>最近录像</h2><div class="panel-actions"><button id="openOutput" class="quiet">打开目录</button></div></div>
+        <div id="files" class="file-list"><div class="empty">还没有本地录像</div></div>
+      </section>
+    </div>
+  </main>
+  <main id="interactView" class="interaction-main hidden">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>直播间工作区</h2><span id="interactionStatus" class="count">未连接</span></div>
+        <div class="room-select">
+          <div class="field"><label>直播间 / 用户主页 / 分享链接</label><div class="input-row"><input id="resolveRoomInput" placeholder="粘贴直播间地址、用户主页或分享链接"><button id="resolveRoom" type="button">解析并使用</button></div></div>
+          <div id="resolveRoomHint" class="hint">用户正在直播时，可自动转换为直播间地址。</div>
+          <div class="field"><label>选择直播间</label><select id="interactionRoom"></select></div>
+          <div class="input-row"><button id="startListen" class="primary">开始监听</button><button id="stopListen" class="danger">停止监听</button></div>
+          <div><span id="sendCapability" class="pill">发送弹幕：检查中</span> <button id="refreshSendSecurity" class="quiet" type="button">刷新发送凭证</button> <label class="check" style="display:inline-flex;margin-left:8px"><input id="workModeToggle" type="checkbox">工作模式</label></div>
+          <div id="sendSecurityHint" class="hint">如果发送弹幕提示缺少安全字段，请先选择直播间，再点击“刷新发送凭证”。</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>只听音频</h2><span id="audioStatus" class="count">未加载</span></div>
+        <div class="audio-box">
+          <div class="input-row"><button id="loadAudio" class="primary">获取音频源</button><button id="clearAudio" class="quiet">清空</button></div>
+          <audio id="audioPlayer" controls></audio>
+          <div id="audioMeta" class="hint">部分直播源可能需要后续转码才能在浏览器内播放。</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>礼物贡献榜</h2><span id="giftRankStatus" class="count">未刷新</span></div>
+        <div class="room-select">
+          <div class="input-row"><button id="refreshGiftRank" class="primary">刷新榜单</button><select id="giftRankAuto"><option value="0">手动刷新</option><option value="10">每 10 秒</option><option value="30">每 30 秒</option><option value="60">每 60 秒</option></select></div>
+          <div class="hint">数据来自直播间礼物榜接口，不做本地实时估算。</div>
+        </div>
+        <div class="rank-work-hint empty">工作模式下已隐藏贡献榜，关闭后可查看。</div>
+        <div id="giftRankList" class="rank-list"><div class="empty">刷新后显示当前直播间贡献榜</div></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2 id="chatPanelTitle">实时弹幕与用户</h2><div class="panel-actions"><button id="clearEvents" class="quiet">清空显示</button></div></div>
+        <div id="chatFeed" class="chat-feed"><div class="empty">选择直播间后开始监听</div></div>
+        <form id="sendForm" class="sendbar"><input id="chatInput" placeholder="发送直播间弹幕"><button class="primary">发送</button></form>
+      </section>
+    </div>
+  </main>
+  <main id="worksView" class="work-main hidden">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>一次性拉取用户作品</h2><span id="workStatus" class="count">未开始</span></div>
+        <div class="settings">
+          <div class="field wide"><label>用户主页 / 分享链接 / sec_user_id</label><input id="workUserUrl" placeholder="https://www.douyin.com/user/..."></div>
+          <div class="field wide"><label>保存目录（留空使用本地录制保存目录）</label><div class="input-row"><input id="workOutputPath" placeholder="/Users/you/Movies/LiveRecorder"><button id="chooseWorkOutput" type="button">选择目录</button></div></div>
+          <label class="check wide"><input id="workForce" type="checkbox">强制扫描历史页（仍跳过已记录作品 ID）</label>
+        </div>
+        <div class="stat-grid">
+          <div class="stat"><b id="workFetched">0</b><span>已检查</span></div>
+          <div class="stat"><b id="workNew">0</b><span>新增作品</span></div>
+          <div class="stat"><b id="workDownloaded">0</b><span>下载文件</span></div>
+          <div class="stat"><b id="workSkipped">0</b><span>跳过</span></div>
+          <div class="stat"><b id="workFailed">0</b><span>失败</span></div>
+          <div class="stat"><b id="workMode">增量</b><span>拉取模式</span></div>
+        </div>
+        <div class="runbar"><button id="startWorkPull" class="primary">开始拉取作品</button><button id="openWorkOutput" class="quiet">打开保存目录</button></div>
+        <div class="hint">默认按作品 ID 和上次拉取时间去重：手动删除过的旧作品不会被再次拉回本地。</div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>作品拉取日志</h2><div class="panel-actions"><button id="clearWorkLogs" class="quiet">清空显示</button></div></div>
+        <div id="workLogs" class="logs">等待开始拉取…</div>
+      </section>
+    </div>
+  </main>
+  <main id="libraryView" class="library-main hidden">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2>主播媒体库</h2><span id="librarySummary" class="count">未刷新</span><div class="panel-actions"><button id="refreshLibrary" class="quiet">刷新</button></div></div>
+        <div class="stat-grid">
+          <div class="stat"><b id="libraryAnchors">0</b><span>主播</span></div>
+          <div class="stat"><b id="libraryFiles">0</b><span>文件</span></div>
+          <div class="stat"><b id="librarySize">0 B</b><span>总大小</span></div>
+        </div>
+        <div id="anchorList" class="anchor-list"><div class="empty">刷新后显示主播列表</div></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-head"><h2 id="selectedAnchorTitle">选择一个主播</h2><span id="selectedAnchorMeta" class="count"></span><div class="panel-actions"><button id="openAnchorFolder" class="quiet">打开目录</button></div></div>
+        <div id="mediaFiles" class="media-files"><div class="empty">选择左侧主播后查看文件</div></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+const token=new URLSearchParams(location.search).get('token')||'';
+const $=id=>document.getElementById(id); let logCursor=0,eventCursor=0,workLogCursor=0,baidupanLogCursor=0,settingsLoaded=false,roomsCache=[],anchorsCache=[],latestRecordings=[],giftRankTimer=null,anchorCheckTimer=null,audioReconnectTimer=null,audioWanted=false,audioRetry=0,audioLastUrl='',audioLastReloadAt=0,audioLastProgressAt=0,audioLastTime=0,audioStillTicks=0,mediaLibrary=null,selectedAnchor=null,selectedAnchorProfile=null,eventsCache=[],licenseState={active:false};
+const desktop=window.liveRecorderDesktop||null;
+const i18n={
+  en:{
+    '所有录制仅保存在本机':'All recordings stay on this device','本地录制':'Local Recording','直播互动':'Live Interaction','作品拉取':'Works Pull','正在连接':'Connecting','背景色':'Theme','语言':'Language','深色':'Dark','午夜蓝':'Midnight','森林绿':'Forest','酒红':'Wine','浅色':'Light','白色':'White','中文':'中文','检查中':'Checking','抖音账号':'Douyin Account','尚未连接':'Not connected','扫码登录后自动同步录制所需会话，无需填写 Cookie':'Scan to sign in. Session is synced automatically; no cookie input needed.','登录抖音':'Sign in','退出':'Sign out','直播间':'Live Rooms','添加':'Add','运行日志':'Logs','清空显示':'Clear','等待启动录制服务…':'Waiting for recorder service…','本地录制设置':'Recording Settings','保存设置':'Save Settings','录像保存目录（留空使用项目 downloads）':'Recording folder (blank = project downloads)','选择目录':'Choose','画质':'Quality','保存格式':'Format','检测间隔（秒）':'Check interval (sec)','分段时长（秒）':'Segment length (sec)','启用分段录制':'Enable segmentation','录完转为 MP4':'Convert to MP4 after recording','转换后删除原文件':'Delete original after conversion','使用代理':'Use proxy','代理地址':'Proxy address','开始本地录制':'Start Recording','停止并保存':'Stop & Save','桌面模式不会执行百度网盘上传脚本。':'Desktop mode will not run Baidu Netdisk upload scripts.','最近录像':'Recent Recordings','打开目录':'Open Folder','还没有本地录像':'No local recordings yet','直播间工作区':'Live Room Workspace','直播间 / 用户主页 / 分享链接':'Live room / user profile / share link','粘贴直播间地址、用户主页或分享链接':'Paste live-room URL, user profile, or share link','解析并使用':'Resolve & Use','用户正在直播时，可自动转换为直播间地址。':'If the user is live, this will convert to a live-room URL automatically.','未连接':'Disconnected','选择直播间':'Select live room','开始监听':'Start Listening','停止监听':'Stop Listening','发送弹幕：检查中':'Chat sending: checking','工作模式':'Work mode','实时消息':'Live Messages','工作模式下已隐藏贡献榜，关闭后可查看。':'Ranking is hidden in work mode. Turn it off to view.','只听音频':'Audio Only','未加载':'Not loaded','获取音频源':'Get Audio Source','清空':'Clear','部分直播源可能需要后续转码才能在浏览器内播放。':'Some live sources may need transcoding before browser playback.','礼物贡献榜':'Gift Contribution Ranking','未刷新':'Not refreshed','刷新榜单':'Refresh Ranking','手动刷新':'Manual refresh','每 10 秒':'Every 10s','每 30 秒':'Every 30s','每 60 秒':'Every 60s','数据来自直播间礼物榜接口，不做本地实时估算。':'Data comes from the live-room gift ranking API; no local real-time estimation.','刷新后显示当前直播间贡献榜':'Refresh to show the current live-room ranking','实时弹幕与用户':'Live Chat & Users','选择直播间后开始监听':'Select a live room and start listening','发送直播间弹幕':'Send live chat','发送':'Send','一次性拉取用户作品':'One-shot User Works Pull','未开始':'Not started','用户主页 / 分享链接 / sec_user_id':'User page / share link / sec_user_id','保存目录（留空使用本地录制保存目录）':'Output folder (blank = recording folder)','强制扫描历史页（仍跳过已记录作品 ID）':'Force scan history (still skips recorded work IDs)','已检查':'Checked','新增作品':'New works','下载文件':'Downloaded files','跳过':'Skipped','失败':'Failed','拉取模式':'Pull mode','开始拉取作品':'Start Pull','打开保存目录':'Open Output Folder','默认按作品 ID 和上次拉取时间去重：手动删除过的旧作品不会被再次拉回本地。':'Deduplicates by work ID and last pull time. Deleted old works will not be downloaded again.','作品拉取日志':'Works Pull Logs','等待开始拉取…':'Waiting to start…','粘贴直播间地址，也可带画质前缀':'Paste live-room URL, optional quality prefix','已连接':'Connected','未监听':'Not listening','监听中':'Listening','发送弹幕：':'Chat sending: ','可用':'available','可能不可用':'may be unavailable','缺少安全字段':'missing security fields','播放中':'Playing','获取中':'Loading','已加载':'Loaded','解析中':'Resolving','解析失败':'Resolve failed','暂无榜单':'No ranking','增量':'Incremental','强制':'Forced','弹幕':'Chat','进房':'Enter','礼物':'Gift','关注':'Follow','我':'Me','系统':'System','错误':'Error','暂无礼物贡献榜数据，可能未开播或接口暂不可用':'No gift ranking data. The room may be offline or the API unavailable.','匿名用户':'Anonymous','直播源':'Live source','先添加直播间':'Add a live room first','添加一个直播间开始录制':'Add a live room to start recording','录制服务运行中':'Recorder running','录制服务未启动':'Recorder stopped','已获得发送弹幕会话能力':'Chat sending session is available','已同步 Cookie，可监听；发送弹幕可能还需要额外安全字段':'Cookie synced. Listening is available; sending may need extra security fields.','重新登录':'Sign in again','正在保存…':'Saving…','浏览器模式请直接输入完整目录':'In browser mode, enter the full directory manually','请从 Electron 桌面应用中使用账号登录':'Please sign in from the Electron desktop app','当前是浏览器模式；请使用 Electron 桌面应用完成扫码登录':'Browser mode: use the Electron desktop app to sign in.','请在新窗口中扫码登录':'Scan the QR code in the new window','抖音账号已退出':'Douyin account signed out','确定退出本机保存的抖音登录状态吗？':'Sign out of the Douyin session saved on this device?','确定删除这个直播间吗？':'Delete this live room?','直播间已添加':'Live room added','设置已保存，上传脚本保持关闭':'Settings saved; upload script remains disabled','录制服务已启动':'Recorder started','录制已停止，视频已保存在本地':'Recorder stopped; video saved locally','开始监听直播间':'Started listening','已停止监听':'Stopped listening','弹幕已提交':'Chat submitted','礼物榜将每':'Gift ranking will refresh every','秒刷新':'seconds','作品拉取任务已开始':'Works pull started','发送弹幕可能不可用':'Chat sending may be unavailable','已启用':'enabled','启用或暂停':'Enable or pause','删除':'Delete','缺少依赖：':'Missing dependencies: ','抖音账号已连接':'Douyin account connected','已更新':'Updated','已解析到直播间地址':'Resolved live-room URL','直播间已解析':'Live room resolved','直播间当前未开播':'This live room is currently offline','该用户当前未开播，或暂时无法从主页解析直播间':'This user is currently offline, or the live room could not be resolved from the profile.','已使用解析到的直播间':'Resolved live room selected','加入录制':'Add to Recording','请先解析直播间':'Resolve live room first','已加入录制列表':'Added to recording list','已启用录制列表中的直播间':'Enabled live room in recording list'
+  }
+};
+let lang=localStorage.getItem('liveRecorderLang')||'zh';
+function t(text){return lang==='zh'?text:(i18n.en[text]||text)}
+function applyTheme(theme){document.body.dataset.theme=theme;localStorage.setItem('liveRecorderTheme',theme);$('themeSelect').value=theme}
+function isWorkMode(){return localStorage.getItem('liveRecorderWorkMode')==='1'}
+function applyWorkMode(enabled){document.body.classList.toggle('work-mode',enabled);localStorage.setItem('liveRecorderWorkMode',enabled?'1':'0');if($('workModeToggle'))$('workModeToggle').checked=enabled;if($('chatPanelTitle'))$('chatPanelTitle').textContent=enabled?t('实时消息'):t('实时弹幕与用户');if(eventsCache.length){const box=$('chatFeed');box.innerHTML=eventsCache.map(renderEvent).join('');box.scrollTop=box.scrollHeight}}
+function translateStatic(){document.documentElement.lang=lang==='zh'?'zh-CN':'en';document.querySelectorAll('body *').forEach(el=>{if(['SCRIPT','STYLE'].includes(el.tagName))return;for(const node of el.childNodes){if(node.nodeType===Node.TEXT_NODE){const raw=node.nodeValue.trim();if(raw){node.__i18nSource=node.__i18nSource||raw;if(i18n.en[node.__i18nSource])node.nodeValue=node.nodeValue.replace(raw,t(node.__i18nSource))}}}if(el.placeholder){el.dataset.i18nPlaceholder=el.dataset.i18nPlaceholder||el.placeholder;if(i18n.en[el.dataset.i18nPlaceholder])el.placeholder=t(el.dataset.i18nPlaceholder)}if(el.title){el.dataset.i18nTitle=el.dataset.i18nTitle||el.title;if(i18n.en[el.dataset.i18nTitle])el.title=t(el.dataset.i18nTitle)}});$('themeSelect').querySelectorAll('option').forEach(o=>o.textContent=t({'dark':'深色','midnight':'午夜蓝','forest':'森林绿','wine':'酒红','light':'浅色','white':'白色'}[o.value]||o.textContent));$('languageSelect').querySelector('option[value=zh]').textContent='中文';$('languageSelect').querySelector('option[value=en]').textContent='English'}
+function applyLanguage(value){lang=value;localStorage.setItem('liveRecorderLang',lang);$('languageSelect').value=lang;translateStatic();renderRooms(roomsCache);refresh().catch(()=>{})}
+async function api(path,options={}){const res=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-LiveRecorder-Token':token,...options.headers}});const data=await res.json();if(!res.ok)throw new Error(data.error||'请求失败');return data}
+function toast(message,error=false){const el=$('toast');el.textContent=t(message);el.className='toast show'+(error?' error':'');setTimeout(()=>el.className='toast',2600)}
+function escapeHtml(value){const el=document.createElement('div');el.textContent=value;return el.innerHTML}
+function hostOf(value){try{const match=value.match(/https?:\/\/[^\s,，]+/);return match?new URL(match[0]).hostname:t('直播源')}catch{return t('直播源')}}
+function renderRooms(rooms){roomsCache=rooms;$('roomCount').textContent=`${rooms.filter(x=>x.active).length} / ${rooms.length} ${t('已启用')}`;$('rooms').innerHTML=rooms.length?rooms.map(r=>`<div class="room ${r.active?'':'off'}"><div class="switch ${r.active?'on':''}" title="${t('启用或暂停')}" onclick="toggleRoom(${r.id},${!r.active})"></div><div><div class="room-url" title="${escapeHtml(r.value)}">${escapeHtml(r.value)}</div><div class="room-meta">${escapeHtml(hostOf(r.value))}</div></div><button class="quiet danger" onclick="deleteRoom(${r.id})">${t('删除')}</button></div>`).join(''):`<div class="empty">${t('添加一个直播间开始录制')}</div>`;const old=$('interactionRoom').value;$('interactionRoom').innerHTML=rooms.length?rooms.map(r=>`<option value="${escapeHtml(r.value)}">${escapeHtml(hostOf(r.value))} · ${escapeHtml(r.value.slice(0,80))}</option>`).join(''):`<option value="">${t('先添加直播间')}</option>`;if([...$('interactionRoom').options].some(o=>o.value===old))$('interactionRoom').value=old}
+function anchorStatusText(s){return s==='live'?'直播中':s==='offline'?'未开播':s==='error'?'异常':'未知'}
+function renderAnchors(anchors){anchorsCache=anchors||[];$('anchorCount').textContent=anchorsCache.length;$('anchorsList').innerHTML=anchorsCache.length?anchorsCache.map((a,i)=>`<div class="anchor-row ${selectedAnchorProfile?.id===a.id?'active':''}" onclick="selectAnchorProfile(${i})"><div class="anchor-title"><b>${escapeHtml(a.name||'未命名主播')}</b><span class="tag">${anchorStatusText(a.last_live_status)}</span></div><div class="anchor-meta">${escapeHtml(a.profile_url||'')}</div><div class="anchor-meta">${a.live_url?escapeHtml(a.live_url):'未解析直播间'}</div>${a.last_check_error?`<div class="anchor-meta">${escapeHtml(a.last_check_error)}</div>`:''}</div>`).join(''):'<div class="empty">添加主播后统一管理录制、互动、作品和媒体库</div>'}
+window.selectAnchorProfile=index=>{const a=anchorsCache[index];if(!a)return;selectedAnchorProfile=a;$('anchorDetailTitle').textContent=a.name||'未命名主播';$('anchorDetailStatus').textContent=anchorStatusText(a.last_live_status);$('anchorDetail').innerHTML=`<div class="field"><label>主页</label><input value="${escapeHtml(a.profile_url||'')}" readonly></div><div class="field"><label>当前直播间</label><input value="${escapeHtml(a.live_url||'未解析')}" readonly></div>${a.last_check_error?`<div class="hint">${escapeHtml(a.last_check_error)}</div>`:''}<div class="input-row"><button onclick="resolveAnchor('${a.id}')" class="primary">解析直播间</button><button onclick="useAnchorForRecording('${a.id}')" class="primary">加入录制</button><button onclick="useAnchorForInteract('${a.id}')">用于互动</button><button onclick="useAnchorForWorks('${a.id}')">拉取作品</button><button onclick="deleteAnchor('${a.id}')" class="danger">删除</button></div>`;renderAnchors(anchorsCache)}
+async function loadAnchors(){const data=await api('/api/anchors');renderAnchors(data.anchors||[])}
+window.resolveAnchor=async id=>{try{const data=await api(`/api/anchors/${id}/resolve`,{method:'POST',body:'{}'});renderAnchors(data.anchors||[]);const idx=anchorsCache.findIndex(a=>a.id===id);if(idx>=0)selectAnchorProfile(idx);toast(data.live_room?.message||'已解析到直播间地址')}catch(e){toast(e.message,true)}}
+window.useAnchorForInteract=async id=>{const a=anchorsCache.find(x=>x.id===id);if(!a)return;if(!a.live_url){toast('请先解析直播间',true);return}try{await api('/api/rooms',{method:'POST',body:JSON.stringify({value:a.live_url})})}catch(e){if(!String(e.message||'').includes('已经存在'))toast(e.message,true)}await refresh();$('interactionRoom').value=a.live_url;$('resolveRoomInput').value=a.profile_url||a.live_url;switchTab('interact')}
+window.useAnchorForRecording=async id=>{try{const data=await api(`/api/anchors/${id}/use-recording`,{method:'POST',body:'{}'});renderRooms(data.rooms||[]);await loadAnchors();toast(data.room?.created?'已加入录制列表':'已启用录制列表中的直播间');switchTab('record')}catch(e){toast(e.message,true)}}
+window.useAnchorForWorks=id=>{const a=anchorsCache.find(x=>x.id===id);if(!a)return;$('workUserUrl').value=a.profile_url||a.live_url;switchTab('works')}
+window.deleteAnchor=async id=>{if(!confirm('确定删除这个主播配置吗？'))return;try{const data=await api(`/api/anchors/${id}`,{method:'DELETE'});selectedAnchorProfile=null;renderAnchors(data.anchors||[]);$('anchorDetail').innerHTML='<div class="empty">选择左侧主播后操作</div>';toast('主播已删除')}catch(e){toast(e.message,true)}}
+async function checkAnchors(){try{$('anchorCheckStatus').textContent='巡检中';const data=await api('/api/anchors/check-live',{method:'POST',body:'{}'});renderAnchors(data.anchors||[]);$('anchorCheckStatus').textContent=`${new Date((data.checked_at||Date.now()/1000)*1000).toLocaleTimeString()} · ${data.results?.filter(x=>x.anchor?.last_live_status==='live').length||0} 直播中`}catch(e){$('anchorCheckStatus').textContent='巡检失败';toast(e.message,true)}}
+function setSettings(s){for(const key of ['output_path','quality','format','check_interval','split_seconds','proxy_address'])$(key).value=s[key]??'';if(!$('workOutputPath').value)$('workOutputPath').value=s.output_path??'';for(const key of ['split_enabled','convert_to_mp4','delete_original','use_proxy'])$(key).checked=!!s[key];settingsLoaded=true}
+function getSettings(){return{output_path:$('output_path').value,quality:$('quality').value,format:$('format').value,check_interval:Number($('check_interval').value),split_seconds:Number($('split_seconds').value),proxy_address:$('proxy_address').value,split_enabled:$('split_enabled').checked,convert_to_mp4:$('convert_to_mp4').checked,delete_original:$('delete_original').checked,use_proxy:$('use_proxy').checked}}
+function formatBytes(size){if(size<1024)return size+' B';if(size<1048576)return(size/1024).toFixed(1)+' KB';if(size<1073741824)return(size/1048576).toFixed(1)+' MB';return(size/1073741824).toFixed(1)+' GB'}
+function renderFiles(files){$('files').innerHTML=files.length?files.slice(0,30).map(f=>`<div class="file" title="${escapeHtml(f.path)}"><div class="file-name">${escapeHtml(f.name)}</div><div class="file-size">${formatBytes(f.size)}</div></div>`).join(''):`<div class="empty">${t('还没有本地录像')}</div>`}
+function renderUploadStatus(data){const cfg=data?.config||{},queue=data?.queue||[];const uploadFieldIds=['baiduEnabled','baiduAutoUpload','baiduGroupByAnchor','baiduDeleteAfterUpload','baiduRemoteDir','baiduWaitTimeout','baiduRetries','baiduBypyBin'];if(!uploadFieldIds.includes(document.activeElement?.id||'')){$('baiduEnabled').checked=!!cfg.enabled;$('baiduAutoUpload').checked=!!cfg.auto_upload;$('baiduGroupByAnchor').checked=!!cfg.group_by_anchor;$('baiduDeleteAfterUpload').checked=!!cfg.delete_after_upload;$('baiduRemoteDir').value=cfg.remote_dir||'/apps/LiveRecorder';$('baiduWaitTimeout').value=cfg.wait_timeout||900;$('baiduRetries').value=cfg.retries||3;$('baiduBypyBin').value=cfg.bypy_bin||'__python_module_bypy__'}$('baidupanStatus').textContent=cfg.enabled?(data.pending?`${data.pending} 个待处理`:'已开启'):'未开启';$('uploadQueue').innerHTML=queue.length?queue.map(item=>{const status={pending:'等待中',uploading:'上传中',success:'已完成',failed:'失败',cancelled:'已取消'}[item.status]||item.status;const retry=item.status==='failed'?`<button class="quiet" onclick="retryUpload('${item.id}')">重试</button>`:'';return`<div class="file" title="${escapeHtml(item.save_file_path||'')}"><div><div class="file-name">${escapeHtml(item.record_name||item.save_file_path||'')}</div><div class="room-meta">${escapeHtml(status)} · ${escapeHtml(item.remote_dir||'')} ${item.error?`· ${escapeHtml(String(item.error).slice(0,120))}`:''}</div></div><div class="file-size">${retry}</div></div>`}).join(''):`<div class="empty">${t('暂无上传任务')}</div>`}
+function getBaidupanConfig(){return{enabled:$('baiduEnabled').checked,auto_upload:$('baiduAutoUpload').checked,group_by_anchor:$('baiduGroupByAnchor').checked,delete_after_upload:$('baiduDeleteAfterUpload').checked,remote_dir:$('baiduRemoteDir').value,wait_timeout:Number($('baiduWaitTimeout').value),retries:Number($('baiduRetries').value),bypy_bin:$('baiduBypyBin').value}}
+function setFeatureLocked(locked){['addForm','addAnchor','checkAnchors','resolveRoom','refreshSendSecurity','start','startListen','sendForm','loadAudio','refreshGiftRank','startWorkPull','saveBaidupan','checkBaidupan','uploadLatest'].forEach(id=>{const el=$(id);if(!el)return;if(el.tagName==='FORM'){[...el.elements].forEach(x=>x.disabled=locked)}else el.disabled=locked});}
+function renderLicense(l){licenseState=l||{active:false};$('licenseBadge').textContent=licenseState.active?'已激活':'未激活';$('licenseBadge').classList.toggle('connected',!!licenseState.active);$('licenseBadge').classList.toggle('locked',!licenseState.active);$('licenseDeviceId').value=licenseState.device_id||'';$('licenseHint').textContent=licenseState.active?`授权状态：${licenseState.message||'买断授权已激活'}${licenseState.order_id?' · 订单 '+licenseState.order_id:''}`:'未激活时只能查看设备码和基础设置，录制/互动/作品拉取等功能会被锁定。';$('activateLicense').disabled=!!licenseState.active;$('deactivateLicense').disabled=!licenseState.active;setFeatureLocked(!licenseState.active)}
+function renderStatus(s){$('statusDot').classList.toggle('on',s.running);$('statusText').textContent=s.running?t('录制服务运行中'):t('录制服务未启动');$('start').disabled=!licenseState.active||s.running||s.missing_dependencies.length>0;$('stop').disabled=!licenseState.active||!s.running;$('dependencyHint').innerHTML=s.missing_dependencies.length?`${t('缺少依赖：')}<strong>${escapeHtml(s.missing_dependencies.join('、'))}</strong>`:t('未开启百度网盘自动上传时，录制仍只保存在本机。')}
+function securityHint(status){const sec=status?.security||{};if(status?.canSend||sec.complete)return'发送弹幕凭证已就绪';const missing=[];if(!sec.ticket)missing.push('ticket');if(!sec.ts_sign)missing.push('ts_sign');if(!sec.private_key)missing.push('private_key');return missing.length?`缺少：${missing.join('、')}。请打开直播间页面后刷新发送凭证。`:'缺少安全字段。请打开直播间页面后刷新发送凭证。'}
+function renderAuth(status){const connected=!!status.connected;$('authBadge').textContent=connected?t('已连接'):t('未连接');$('authBadge').classList.toggle('connected',connected);$('authTitle').textContent=connected?t('抖音账号已连接'):t('尚未连接');$('authDesc').textContent=connected?(status.canSend?t('已获得发送弹幕会话能力'):t('已同步 Cookie，可监听；发送弹幕可能还需要额外安全字段')):t('扫码登录后自动同步录制所需会话，无需填写 Cookie');$('loginDouyin').textContent=connected?t('重新登录'):t('登录抖音');$('logoutDouyin').hidden=!connected;$('sendCapability').textContent=t('发送弹幕：')+(status.canSend?t('可用'):t('可能不可用'));if($('sendSecurityHint'))$('sendSecurityHint').textContent=securityHint(status)}
+function renderInteraction(s){$('interactionStatus').textContent=s.listening?t('监听中'):t('未监听');$('sendCapability').textContent=t('发送弹幕：')+(s.can_send?t('可用'):t('缺少安全字段'));if(!audioWanted)$('audioStatus').textContent=s.audio_playing?t('播放中'):t('未加载');$('startListen').disabled=!licenseState.active||s.listening;$('stopListen').disabled=!licenseState.active||!s.listening;$('loadAudio').disabled=!licenseState.active;$('refreshGiftRank').disabled=!licenseState.active}
+async function loadAudioSource(isReconnect=false){audioWanted=true;if(audioReconnectTimer){clearTimeout(audioReconnectTimer);audioReconnectTimer=null}try{if(isReconnect){audioRetry+=1;$('audioStatus').textContent=`重连中 ${audioRetry}`}else{audioRetry=0;$('audioStatus').textContent='获取中'}const data=await api('/api/interaction/audio-source',{method:'POST',body:JSON.stringify({room_url:selectedRoom(),quality:$('quality').value})});audioLastUrl=data.audio.url;audioLastReloadAt=Date.now();audioLastProgressAt=Date.now();audioStillTicks=0;$('audioPlayer').src=data.audio.url;$('audioMeta').textContent=`${data.audio.anchor_name||'直播间'} · ${data.audio.title||''} · ${data.audio.format} · 自动重连已开启`;$('audioPlayer').load();await $('audioPlayer').play().catch(()=>{});$('audioStatus').textContent=isReconnect?'已重连':'已加载'}catch(e){$('audioStatus').textContent=isReconnect?'重连失败':'失败';if(!isReconnect)toast(e.message,true);scheduleAudioReconnect(e.message,true)}}
+function scheduleAudioReconnect(reason='',force=false){if(!audioWanted)return;if(audioReconnectTimer)return;const sinceReload=Date.now()-audioLastReloadAt;if(!force&&sinceReload<60000)return;const delay=Math.min(30000,5000*Math.max(1,audioRetry+1));$('audioMeta').textContent=`音频断开，${Math.round(delay/1000)} 秒后自动重连${reason?'：'+reason:''}`;audioReconnectTimer=setTimeout(()=>{audioReconnectTimer=null;loadAudioSource(true)},delay)}
+function stopAudioReconnect(){audioWanted=false;audioRetry=0;audioStillTicks=0;if(audioReconnectTimer){clearTimeout(audioReconnectTimer);audioReconnectTimer=null}}
+function monitorAudioHealth(){const player=$('audioPlayer');if(!audioWanted||!player.src||player.paused||player.seeking)return;const now=player.currentTime||0;if(Math.abs(now-audioLastTime)>=0.2){audioStillTicks=0;audioLastTime=now;audioLastProgressAt=Date.now();return}audioStillTicks+=1;if(audioStillTicks>=12&&Date.now()-audioLastProgressAt>60000){audioStillTicks=0;scheduleAudioReconnect('播放进度超过 60 秒未变化',true)}}
+function renderWorkPull(s){const stats=s.stats||{};$('workStatus').textContent=t(s.message||'未开始');$('startWorkPull').disabled=!licenseState.active||!!s.running;$('workFetched').textContent=stats.fetched||0;$('workNew').textContent=stats.new||0;$('workDownloaded').textContent=stats.downloaded||0;$('workSkipped').textContent=stats.skipped||0;$('workFailed').textContent=stats.failed||0;$('workMode').textContent=$('workForce').checked?t('强制'):t('增量')}
+async function refresh(){try{const data=await api('/api/state');renderLicense(data.license||{});renderRooms(data.rooms);renderAnchors(data.anchors||anchorsCache);if(!settingsLoaded)setSettings(data.settings);renderStatus(data.status);latestRecordings=data.recordings||[];renderFiles(latestRecordings);renderUploadStatus(data.baidupan||{});renderInteraction(data.interaction);renderWorkPull(data.work_pull||{})}catch(e){toast(e.message,true)}}
+async function pollLogs(){try{const data=await api(`/api/logs?cursor=${logCursor}`);if(data.lines.length){const box=$('logs');if(logCursor===0)box.textContent='';box.textContent+=data.lines.join('\n')+'\n';box.scrollTop=box.scrollHeight}logCursor=data.cursor}catch{} }
+async function pollBaidupanLogs(){try{const data=await api(`/api/baidupan/logs?cursor=${baidupanLogCursor}`);if(data.lines.length){const box=$('baidupanLogs');if(baidupanLogCursor===0)box.textContent='';box.textContent+=data.lines.join('\n')+'\n';box.scrollTop=box.scrollHeight}baidupanLogCursor=data.cursor}catch{}}
+function eventLabel(type){return t({chat:'弹幕',member:'进房',gift:'礼物',follow:'关注',self:'我',system:'系统',error:'错误'}[type]||type)}
+function renderEvent(e){const time=new Date((e.time||Date.now()/1000)*1000).toLocaleTimeString();if(isWorkMode()){const hidden=e.type&&e.type!=='chat'&&e.type!=='error'&&e.type!=='system';const prefix=e.type==='chat'?`${time}  `:`${time} · ${eventLabel(e.type)}  `;return`<div class="event ${escapeHtml(e.type||'system')} ${hidden?'work-hidden':'work-muted'}"><div class="event-meta"></div><div class="event-content">${escapeHtml(prefix+(e.content||e.message||''))}</div></div>`}const user=e.user?.nickname?`<span class="event-name">${escapeHtml(e.user.nickname)}</span>`:'';return`<div class="event ${escapeHtml(e.type||'system')}"><div class="event-meta"><span>${eventLabel(e.type)}</span>${user}<span>${time}</span></div><div class="event-content">${escapeHtml(e.content||e.message||'')}</div></div>`}
+function renderGiftRank(data){const rank=data.gift_rank||data;const list=rank.ranks||[];const message=rank.raw_message||'暂无礼物贡献榜数据，可能未开播或接口暂不可用';$('giftRankStatus').textContent=list.length?`${t('已更新')} ${new Date((rank.updated_at||Date.now()/1000)*1000).toLocaleTimeString()}`:t('暂无榜单');$('giftRankList').innerHTML=list.length?list.map(item=>{const user=item.user||{};const avatar=user.avatar?`<img class="rank-avatar" src="${escapeHtml(user.avatar)}">`:'<div class="rank-avatar"></div>';return`<div class="rank-row"><div class="rank-no">${escapeHtml(item.rank||'')}</div>${avatar}<div class="rank-user"><div class="rank-name">${escapeHtml(user.nickname||t('匿名用户'))}</div><div class="rank-id">${escapeHtml(user.display_id||user.id||user.sec_uid||'')}</div></div><div class="rank-score">${escapeHtml(item.contribution||'-')}</div></div>`}).join(''):`<div class="empty">${escapeHtml(t(message))}</div>`}
+function renderMediaLibrary(library){mediaLibrary=library;const anchors=library.anchors||[];$('libraryAnchors').textContent=library.total_anchors||0;$('libraryFiles').textContent=library.total_files||0;$('librarySize').textContent=formatBytes(library.total_size||0);$('librarySummary').textContent=library.root||'';$('anchorList').innerHTML=anchors.length?anchors.map((a,i)=>`<div class="anchor-row ${selectedAnchor===a.anchor?'active':''}" onclick="selectAnchor(${i})"><div class="anchor-title"><b>${escapeHtml(a.anchor)}</b><span class="tag">${a.total_files}</span></div><div class="anchor-meta">${formatBytes(a.total_size)} · ${a.video_count} 视频 · ${a.audio_count} 音频 · ${a.image_count} 图片</div><div class="anchor-meta">直播 ${a.recording_count} · 作品 ${a.works_count} · ${new Date(a.latest_modified*1000).toLocaleString()}</div></div>`).join(''):`<div class="empty">${t('刷新后显示主播列表')}</div>`;if(!selectedAnchor&&anchors[0])selectAnchor(0)}
+window.selectAnchor=index=>{const anchor=mediaLibrary?.anchors?.[index];if(!anchor)return;selectedAnchor=anchor.anchor;$('selectedAnchorTitle').textContent=anchor.anchor;$('selectedAnchorMeta').textContent=`${anchor.total_files} 文件 · ${formatBytes(anchor.total_size)}`;$('mediaFiles').innerHTML=(anchor.files||[]).map(file=>`<div class="media-file" title="${escapeHtml(file.path)}"><div><div class="media-file-name">${escapeHtml(file.name)}</div><div class="media-file-meta">${file.source==='works'?'作品':'直播'} · ${file.kind} · ${new Date(file.modified*1000).toLocaleString()}</div></div><div>${formatBytes(file.size)}</div></div>`).join('')||`<div class="empty">${t('选择左侧主播后查看文件')}</div>`;renderMediaLibrary(mediaLibrary)}
+async function loadMediaLibrary(){const data=await api('/api/media-library');selectedAnchor=null;renderMediaLibrary(data.library||{})}
+async function pollEvents(){try{const data=await api(`/api/interaction/events?cursor=${eventCursor}`);if(data.events.length){eventsCache=eventsCache.concat(data.events).slice(-800);const box=$('chatFeed');if(eventCursor===0)box.innerHTML='';box.insertAdjacentHTML('beforeend',data.events.map(renderEvent).join(''));box.scrollTop=box.scrollHeight}eventCursor=data.cursor}catch{}}
+async function pollWorkLogs(){try{const data=await api(`/api/work-pull/logs?cursor=${workLogCursor}`);if(data.lines.length){const box=$('workLogs');if(workLogCursor===0)box.textContent='';box.textContent+=data.lines.join('\n')+'\n';box.scrollTop=box.scrollHeight}workLogCursor=data.cursor}catch{}}
+function selectedRoom(){return $('interactionRoom').value||roomsCache.find(r=>r.active)?.value||roomsCache[0]?.value||''}
+function switchTab(name){const anchors=name==='anchors',interact=name==='interact',works=name==='works',library=name==='library';$('anchorsView').classList.toggle('hidden',!anchors);$('recordView').classList.toggle('hidden',anchors||interact||works||library);$('interactView').classList.toggle('hidden',!interact);$('worksView').classList.toggle('hidden',!works);$('libraryView').classList.toggle('hidden',!library);$('tabAnchors').classList.toggle('active',anchors);$('tabRecord').classList.toggle('active',!anchors&&!interact&&!works&&!library);$('tabInteract').classList.toggle('active',interact);$('tabWorks').classList.toggle('active',works);$('tabLibrary').classList.toggle('active',library);if(anchors)loadAnchors().catch(e=>toast(e.message,true));if(library)loadMediaLibrary().catch(e=>toast(e.message,true))}
+window.toggleRoom=async(id,active)=>{try{const data=await api(`/api/rooms/${id}`,{method:'POST',body:JSON.stringify({active})});renderRooms(data.rooms)}catch(e){toast(e.message,true)}};
+window.deleteRoom=async id=>{if(!confirm('确定删除这个直播间吗？'))return;try{const data=await api(`/api/rooms/${id}`,{method:'DELETE'});renderRooms(data.rooms)}catch(e){toast(e.message,true)}};
+window.retryUpload=async id=>{try{const data=await api(`/api/baidupan/${id}/retry`,{method:'POST',body:'{}'});renderUploadStatus(data.baidupan);toast('上传任务已重新排队')}catch(e){toast(e.message,true)}};
+$('addForm').onsubmit=async e=>{e.preventDefault();try{const data=await api('/api/rooms',{method:'POST',body:JSON.stringify({value:$('roomInput').value})});$('roomInput').value='';renderRooms(data.rooms);toast('直播间已添加')}catch(err){toast(err.message,true)}};
+$('saveSettings').onclick=async()=>{try{await api('/api/settings',{method:'POST',body:JSON.stringify(getSettings())});toast('录制设置已保存')}catch(e){toast(e.message,true)}};
+$('saveBaidupan').onclick=async()=>{try{const data=await api('/api/baidupan/settings',{method:'POST',body:JSON.stringify(getBaidupanConfig())});renderUploadStatus(data.status);toast('百度网盘上传设置已保存')}catch(e){toast(e.message,true)}};
+$('checkBaidupan').onclick=async()=>{try{$('baidupanHint').textContent='正在检测 bypy 授权…';const data=await api('/api/baidupan/check',{method:'POST',body:'{}'});const check=data.check||{};$('baidupanHint').textContent=check.ok?'百度网盘授权可用':(check.error||check.output||'授权不可用，请查看上传日志或按 bypy 输出完成授权');if(check.output){$('baidupanLogs').textContent+=`${check.output}\n`;baidupanLogCursor=0}$('baidupanLogs').scrollTop=$('baidupanLogs').scrollHeight;renderUploadStatus(data.baidupan);toast(check.ok?'百度网盘授权可用':'百度网盘授权不可用',!check.ok)}catch(e){toast(e.message,true)}};
+$('uploadLatest').onclick=async()=>{try{if(!latestRecordings.length)throw new Error('还没有可上传的本地录像');const f=latestRecordings[0];const data=await api('/api/baidupan/enqueue',{method:'POST',body:JSON.stringify({save_file_path:f.path,record_name:f.name,save_type:(f.name.split('.').pop()||'TS').toUpperCase(),source:'manual'})});renderUploadStatus(data.baidupan);toast('最近录像已加入上传队列')}catch(e){toast(e.message,true)}};
+$('clearUploadFinished').onclick=async()=>{try{const data=await api('/api/baidupan/clear-finished',{method:'POST',body:'{}'});renderUploadStatus(data.baidupan);toast('已清理结束的上传任务')}catch(e){toast(e.message,true)}};
+$('start').onclick=async()=>{try{const data=await api('/api/start',{method:'POST',body:JSON.stringify({settings:getSettings()})});renderStatus(data.status);toast('录制服务已启动')}catch(e){toast(e.message,true)}};
+$('stop').onclick=async()=>{try{$('stop').disabled=true;$('stop').textContent=t('正在保存…');const data=await api('/api/stop',{method:'POST',body:'{}'});renderStatus(data.status);toast('录制已停止，视频已保存在本地');refresh()}catch(e){toast(e.message,true)}finally{$('stop').textContent=t('停止并保存')}};
+$('openOutput').onclick=async()=>{try{await api('/api/open-output',{method:'POST',body:'{}'})}catch(e){toast(e.message,true)}};
+$('copyDeviceId').onclick=async()=>{try{await navigator.clipboard.writeText($('licenseDeviceId').value);toast('设备码已复制')}catch{toast('请手动复制设备码')}};
+$('activateLicense').onclick=async()=>{try{const data=await api('/api/license/activate',{method:'POST',body:JSON.stringify({code:$('licenseCode').value})});renderLicense(data.license);$('licenseCode').value='';toast('授权已激活')}catch(e){toast(e.message,true)}};
+$('deactivateLicense').onclick=async()=>{if(!confirm('确定清除本机授权吗？'))return;try{const data=await api('/api/license/deactivate',{method:'POST',body:'{}'});renderLicense(data.license);toast('本机授权已清除')}catch(e){toast(e.message,true)}};
+$('loginDouyin').onclick=async()=>{if(!desktop){toast('请从 Electron 桌面应用中使用账号登录',true);return}try{await desktop.loginDouyin();toast('请在新窗口中扫码登录')}catch(e){toast(e.message,true)}};
+$('logoutDouyin').onclick=async()=>{if(!desktop||!confirm('确定退出本机保存的抖音登录状态吗？'))return;try{renderAuth(await desktop.logoutDouyin());toast('抖音账号已退出')}catch(e){toast(e.message,true)}};
+$('refreshSendSecurity').onclick=async()=>{if(!desktop){toast('请从 Electron 桌面应用中刷新发送凭证',true);return}try{$('refreshSendSecurity').disabled=true;$('sendSecurityHint').textContent='正在打开直播间并采集发送凭证，请在登录窗口中保持直播间页面打开…';const status=await desktop.refreshDouyinSecurity(selectedRoom());renderAuth(status);toast(status.canSend?'发送弹幕凭证已刷新':'仍缺少发送弹幕安全字段',!status.canSend)}catch(e){toast(e.message,true)}finally{$('refreshSendSecurity').disabled=false}};
+$('chooseOutput').onclick=async()=>{if(!desktop){toast('浏览器模式请直接输入完整目录');return}const directory=await desktop.chooseOutputDirectory();if(directory)$('output_path').value=directory};
+$('chooseWorkOutput').onclick=async()=>{if(!desktop){toast('浏览器模式请直接输入完整目录');return}const directory=await desktop.chooseOutputDirectory();if(directory)$('workOutputPath').value=directory};
+$('clearLogs').onclick=()=>{$('logs').textContent='';};
+$('tabAnchors').onclick=()=>switchTab('anchors');
+$('tabRecord').onclick=()=>switchTab('record');
+$('tabInteract').onclick=()=>switchTab('interact');
+$('tabWorks').onclick=()=>switchTab('works');
+$('tabLibrary').onclick=()=>switchTab('library');
+$('themeSelect').onchange=()=>applyTheme($('themeSelect').value);
+$('languageSelect').onchange=()=>applyLanguage($('languageSelect').value);
+$('workModeToggle').onchange=()=>applyWorkMode($('workModeToggle').checked);
+$('resolveRoom').onclick=async()=>{try{$('resolveRoom').disabled=true;$('resolveRoomHint').textContent=t('解析中');const data=await api('/api/douyin/resolve-live-room',{method:'POST',body:JSON.stringify({url:$('resolveRoomInput').value})});const room=data.live_room||{};$('resolveRoomHint').textContent=t(room.message||'已解析到直播间地址');if(room.is_live&&room.room_url){try{await api('/api/rooms',{method:'POST',body:JSON.stringify({value:room.room_url})})}catch(e){if(!String(e.message||'').includes('已经存在')&&!String(e.message||'').includes('exists'))throw e}await refresh();$('interactionRoom').value=room.room_url;toast('已使用解析到的直播间')}}catch(e){$('resolveRoomHint').textContent=t('解析失败');toast(e.message,true)}finally{$('resolveRoom').disabled=false}};
+$('startListen').onclick=async()=>{try{const data=await api('/api/interaction/start',{method:'POST',body:JSON.stringify({room_url:selectedRoom()})});renderInteraction(data.interaction);toast('开始监听直播间')}catch(e){toast(e.message,true)}};
+$('stopListen').onclick=async()=>{try{const data=await api('/api/interaction/stop',{method:'POST',body:'{}'});renderInteraction(data.interaction);toast('已停止监听')}catch(e){toast(e.message,true)}};
+$('sendForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/interaction/send',{method:'POST',body:JSON.stringify({content:$('chatInput').value})});$('chatInput').value='';toast('弹幕已提交')}catch(err){toast(err.message,true)}};
+$('loadAudio').onclick=()=>loadAudioSource(false);
+$('refreshGiftRank').onclick=async()=>{try{$('giftRankStatus').textContent='刷新中';const data=await api('/api/interaction/gift-rank',{method:'POST',body:JSON.stringify({room_url:selectedRoom()})});renderGiftRank(data)}catch(e){$('giftRankStatus').textContent='刷新失败';toast(e.message,true)}};
+$('giftRankAuto').onchange=()=>{if(giftRankTimer){clearInterval(giftRankTimer);giftRankTimer=null}const seconds=Number($('giftRankAuto').value);if(seconds>0){giftRankTimer=setInterval(()=>$('refreshGiftRank').click(),seconds*1000);toast(`${t('礼物榜将每')} ${seconds} ${t('秒刷新')}`)}};
+$('clearAudio').onclick=()=>{stopAudioReconnect();$('audioPlayer').removeAttribute('src');$('audioPlayer').load();$('audioMeta').textContent='部分直播源可能需要后续转码才能在浏览器内播放。';$('audioStatus').textContent='未加载'};
+$('audioPlayer').addEventListener('playing',()=>{if(audioWanted){audioRetry=0;$('audioStatus').textContent='播放中'}});
+$('audioPlayer').addEventListener('error',()=>scheduleAudioReconnect('播放器错误',true));
+$('audioPlayer').addEventListener('ended',()=>scheduleAudioReconnect('音频流结束',true));
+$('audioPlayer').addEventListener('stalled',()=>{if(audioWanted)$('audioStatus').textContent='缓冲中'});
+$('audioPlayer').addEventListener('waiting',()=>{if(audioWanted)$('audioStatus').textContent='缓冲中'});
+$('clearEvents').onclick=()=>{eventsCache=[];$('chatFeed').innerHTML='';};
+$('clearWorkLogs').onclick=()=>{$('workLogs').textContent='';};
+$('workForce').onchange=()=>{$('workMode').textContent=$('workForce').checked?t('强制'):t('增量')};
+$('startWorkPull').onclick=async()=>{try{workLogCursor=0;$('workLogs').textContent='';const data=await api('/api/work-pull/start',{method:'POST',body:JSON.stringify({user_url:$('workUserUrl').value,output_path:$('workOutputPath').value,force:$('workForce').checked})});renderWorkPull(data.work_pull);toast('作品拉取任务已开始')}catch(e){toast(e.message,true)}};
+$('openWorkOutput').onclick=async()=>{try{await api('/api/open-work-output',{method:'POST',body:JSON.stringify({output_path:$('workOutputPath').value})})}catch(e){toast(e.message,true)}};
+$('addAnchor').onclick=async()=>{try{const data=await api('/api/anchors',{method:'POST',body:JSON.stringify({name:$('anchorName').value,profile_url:$('anchorUrl').value,live_url:$('anchorLiveUrl').value})});$('anchorName').value='';$('anchorUrl').value='';$('anchorLiveUrl').value='';renderAnchors(data.anchors||[]);toast('主播已添加')}catch(e){toast(e.message,true)}};
+$('checkAnchors').onclick=()=>checkAnchors();
+$('anchorCheckAuto').onchange=()=>{if(anchorCheckTimer){clearInterval(anchorCheckTimer);anchorCheckTimer=null}const seconds=Number($('anchorCheckAuto').value);if(seconds>0){anchorCheckTimer=setInterval(checkAnchors,seconds*1000);toast(`主播状态将每 ${seconds} 秒巡检`)}};
+$('refreshAnchors').onclick=()=>loadAnchors().catch(e=>toast(e.message,true));
+$('refreshLibrary').onclick=()=>loadMediaLibrary().catch(e=>toast(e.message,true));
+$('openAnchorFolder').onclick=async()=>{try{const anchor=(mediaLibrary?.anchors||[]).find(a=>a.anchor===selectedAnchor);if(!anchor)throw new Error('请先选择主播');await api('/api/open-media-folder',{method:'POST',body:JSON.stringify({folder:anchor.folder})})}catch(e){toast(e.message,true)}};
+applyTheme(localStorage.getItem('liveRecorderTheme')||'dark');
+$('languageSelect').value=lang;
+translateStatic();
+applyWorkMode(isWorkMode());
+if(desktop){desktop.getDouyinStatus().then(renderAuth).catch(e=>toast(e.message,true));desktop.onDouyinStatusChanged(renderAuth)}else{renderAuth({connected:false});$('authDesc').textContent=t('当前是浏览器模式；请使用 Electron 桌面应用完成扫码登录')}
+refresh();pollLogs();pollEvents();pollWorkLogs();pollBaidupanLogs();setInterval(refresh,4000);setInterval(pollLogs,1000);setInterval(pollEvents,1000);setInterval(pollWorkLogs,1000);setInterval(pollBaidupanLogs,1000);setInterval(monitorAudioHealth,5000);
+</script>
+</body>
+</html>
