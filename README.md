@@ -306,6 +306,12 @@ https://raw.githubusercontent.com/yanqc1996/live-recording/main/release/update.j
 
 如果你先用 GitHub 管理版本和安装包，可以按下面流程操作。
 
+完整发版检查清单见：
+
+```text
+发版流程README.md
+```
+
 ### 1. 修改版本号
 
 在 `package.json` 中修改版本号，例如：
