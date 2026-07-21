@@ -67,6 +67,7 @@ def main() -> None:
     parser.add_argument("--notes", default="修复已知问题并优化稳定性。", help="更新说明，会写入 update.json")
     parser.add_argument("--title", default="", help="Release 标题，默认 播录助手 v{version}")
     parser.add_argument("--download-url", default="", help="自定义 DMG 下载地址；设置后优先于 --repo")
+    parser.add_argument("--asset-prefix", default="BoluAssistant", help="GitHub Release 资产英文前缀，默认 BoluAssistant")
     parser.add_argument("--published-at", default=date.today().isoformat(), help="发布日期，默认今天")
     parser.add_argument("--include-xianyu-assets", action="store_true", help="同时把咸鱼上架素材包 zip 复制到发版目录")
     args = parser.parse_args()
@@ -79,6 +80,10 @@ def main() -> None:
     app_zip_name = f"{product_name}-{version}-arm64-mac.zip"
     delivery_dir_name = f"{product_name}-v{version}-mac-arm64-用户交付包"
     delivery_zip_name = f"{delivery_dir_name}.zip"
+    asset_prefix = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in str(args.asset_prefix or "BoluAssistant")).strip("-") or "BoluAssistant"
+    github_dmg_name = f"{asset_prefix}-{version}-arm64.dmg"
+    github_app_zip_name = f"{asset_prefix}-{version}-arm64-mac.zip"
+    github_delivery_zip_name = f"{asset_prefix}-v{version}-mac-arm64-delivery.zip"
 
     dmg = DIST / dmg_name
     app_zip = DIST / app_zip_name
@@ -105,10 +110,10 @@ def main() -> None:
     if github_assets_dir.exists():
         shutil.rmtree(github_assets_dir)
     github_assets_dir.mkdir(parents=True, exist_ok=True)
-    safe_copy(dmg, github_assets_dir / dmg.name)
+    safe_copy(dmg, github_assets_dir / github_dmg_name)
     if app_zip.exists():
-        safe_copy(app_zip, github_assets_dir / app_zip.name)
-    safe_copy(delivery_zip, github_assets_dir / delivery_zip.name)
+        safe_copy(app_zip, github_assets_dir / github_app_zip_name)
+    safe_copy(delivery_zip, github_assets_dir / github_delivery_zip_name)
     xianyu_zip = RELEASE / "咸鱼上架素材包.zip"
     if args.include_xianyu_assets and xianyu_zip.exists():
         safe_copy(xianyu_zip, github_assets_dir / xianyu_zip.name)
@@ -116,7 +121,7 @@ def main() -> None:
     if args.download_url:
         download_url = args.download_url
     elif args.repo:
-        download_url = github_release_url(args.repo, tag, dmg.name)
+        download_url = github_release_url(args.repo, tag, github_dmg_name)
     else:
         download_url = f"请替换为 {dmg.name} 的 GitHub Release 下载地址"
 
