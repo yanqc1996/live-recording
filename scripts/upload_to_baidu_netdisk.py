@@ -20,6 +20,7 @@ def cli_command(cli: str) -> list[str]:
     return shlex.split(cli)
 
 
+
 def run_command(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
@@ -113,7 +114,6 @@ def wait_for_single_file(path: Path, timeout: int, stable_seconds: int = 8) -> P
         return path
     return None
 
-
 def resolve_upload_files(
     save_file_path: str,
     save_type: str,
@@ -146,6 +146,7 @@ def resolve_upload_files(
         if fallback:
             return [fallback]
     return []
+
 def upload_file(
     cli: str,
     local_file: Path,

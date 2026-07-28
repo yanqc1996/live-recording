@@ -99,6 +99,8 @@ package-lock.json
 
 ### 2. 本地打包
 
+#### macOS
+
 执行：
 
 ```bash
@@ -112,6 +114,46 @@ ls -lh dist/播录助手-0.1.4-arm64.dmg
 ```
 
 如果文件存在，说明本地 DMG 已打出。
+
+#### Windows x64
+
+Windows 安装包必须在 Windows 10/11 x64 环境构建，不能在 macOS 上交叉
+生成。构建机器需要先安装：
+
+- Node.js 22.12 或更高版本
+- Python 3.11 64 位，并加入 `PATH`
+- Git
+
+在 Windows PowerShell 中进入项目目录，然后执行：
+
+```powershell
+npm ci
+python scripts/build_desktop_runtime.py
+npx electron-builder --win nsis portable --x64
+```
+
+当前不直接使用 `npm run desktop:dist`，因为其中的 Python 构建命令是
+`python3`，而 Windows 默认通常使用 `python`。上面的命令会依次：
+
+1. 按 `package-lock.json` 安装 Node/Electron 构建依赖；
+2. 生成 Windows 版 Python 运行时，并内置 `node.exe` 和 `ffmpeg.exe`；
+3. 生成 NSIS 安装包和免安装便携版。
+
+预期产物位于：
+
+```text
+dist/
+├── 播录助手 Setup 0.1.4.exe
+└── 播录助手 0.1.4.exe
+```
+
+带 `Setup` 的文件是安装包，另一个是 portable 便携版。打包前不要复用从
+macOS 复制过来的 `build/desktop-runtime` 或 `dist/` 构建产物。
+
+注意：当前 `scripts/prepare_release.py` 和 `release/update.json` 的标准
+流程仍以 macOS DMG 为主。Windows EXE 可以先手动上传到 GitHub Release；
+如果需要让 Windows 客户端自动打开正确的 EXE 下载地址，还需要把更新清单
+改成按平台提供下载地址。
 
 ### 3. 生成 GitHub Release 上传目录
 
@@ -374,4 +416,3 @@ git push --tags
 ```
 
 如果需要新版本 tag，优先在 GitHub Release 页面创建 `v版本号`。
-

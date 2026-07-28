@@ -249,18 +249,29 @@ Windows 包需要在 Windows 环境构建。原因是项目内置的 Python 运�
 
 在 Windows 项目目录执行：
 
-```bash
-npm install
-npm run desktop:dist
+```powershell
+npm ci
+python scripts/build_desktop_runtime.py
+npx electron-builder --win nsis portable --x64
 ```
+
+这里分两步执行，是因为当前 `package.json` 的 `desktop:runtime` 使用
+`python3` 命令，而 Windows 默认通常提供的是 `python`。第一条 Python
+命令会创建独立构建环境、安装依赖，并生成 Windows 版 Python/Node/FFmpeg
+运行时；最后一条命令会生成 x64 安装包和便携版。
 
 预期输出：
 
 ```text
 dist/
-├── 播录助手 Setup 0.1.0.exe
-└── 播录助手 0.1.0.exe
+├── 播录助手 Setup 版本号.exe
+└── 播录助手 版本号.exe
 ```
+
+其中带 `Setup` 的文件是 NSIS 安装包，另一个是免安装便携版。Windows
+构建产物必须在 Windows 上生成，不能复用 macOS 上的
+`build/desktop-runtime` 或 `dist/`。如果是从 Mac 复制整个项目目录，
+建议不要复制这两个构建目录。
 
 ## 半自动更新
 
