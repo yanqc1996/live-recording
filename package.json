@@ -1,6 +1,6 @@
 {
   "name": "live-recorder-desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "播录助手本地桌面应用",
   "main": "electron/main.cjs",
