@@ -1,6 +1,8 @@
 import unittest
+import tempfile
+from pathlib import Path
 
-from desktop_media_library import group_recordings
+from desktop_media_library import RecentRecordingCache, group_recordings
 
 
 class RecordingGroupsTest(unittest.TestCase):
@@ -17,6 +19,20 @@ class RecordingGroupsTest(unittest.TestCase):
         self.assertEqual(2, groups[0]["segment_count"])
         self.assertEqual(300, groups[0]["total_size"])
         self.assertEqual("MP4", groups[0]["format"])
+
+    def test_recent_recordings_are_cached_until_invalidated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.mp4"
+            first.write_bytes(b"first")
+            cache = RecentRecordingCache(ttl_seconds=60)
+
+            self.assertEqual(["first.mp4"], [item["name"] for item in cache.get(root)])
+            (root / "second.mp4").write_bytes(b"second")
+            self.assertEqual(["first.mp4"], [item["name"] for item in cache.get(root)])
+
+            cache.invalidate()
+            self.assertEqual({"first.mp4", "second.mp4"}, {item["name"] for item in cache.get(root)})
 
 
 if __name__ == "__main__":

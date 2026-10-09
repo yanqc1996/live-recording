@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,55 @@ MEDIA_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a", ".jpg", ".jpe
 VIDEO_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+RECORDING_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a"}
+
+
+class RecentRecordingCache:
+    """Avoid repeatedly walking a large recording tree for frequent state polls."""
+
+    def __init__(self, ttl_seconds: float = 15.0, limit: int = 100):
+        self.ttl_seconds = ttl_seconds
+        self.limit = limit
+        self._lock = threading.Lock()
+        self._root = ""
+        self._expires_at = 0.0
+        self._items: list[dict] = []
+
+    def get(self, root: Path, force: bool = False) -> list[dict]:
+        root_key = str(root.resolve())
+        now = time.monotonic()
+        with self._lock:
+            if not force and root_key == self._root and now < self._expires_at:
+                return list(self._items)
+            items = self._scan(root)
+            self._root = root_key
+            self._expires_at = time.monotonic() + self.ttl_seconds
+            self._items = items
+            return list(items)
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._expires_at = 0.0
+
+    def _scan(self, root: Path) -> list[dict]:
+        if not root.exists():
+            return []
+        files = []
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in RECORDING_EXTENSIONS:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append({
+                "name": path.name,
+                "path": str(path),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+        files.sort(key=lambda item: item["modified"], reverse=True)
+        return files[:self.limit]
 
 
 def group_recordings(files: list[dict]) -> list[dict]:

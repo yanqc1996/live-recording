@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
-from desktop_media_library import MediaLibrary, group_recordings
+from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -111,6 +111,7 @@ class AppState:
         self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._last_recording_candidate: dict | None = None
+        self._recordings = RecentRecordingCache()
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
@@ -176,23 +177,10 @@ class AppState:
                 results.append({"anchor": updated, "live_room": None, "ok": False, "error": str(exc)})
         return {"results": results, "anchors": self.anchors.list(), "checked_at": int(time.time())}
 
-    def recordings(self) -> list[dict]:
+    def recordings(self, force: bool = False) -> list[dict]:
         settings = self.settings.load()
         root = Path(settings["output_path"]) if settings["output_path"] else PROJECT_ROOT / "downloads"
-        if not root.exists():
-            return []
-        extensions = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a"}
-        files = [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in extensions]
-        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-        return [
-            {
-                "name": path.name,
-                "path": str(path),
-                "size": path.stat().st_size,
-                "modified": path.stat().st_mtime,
-            }
-            for path in files[:100]
-        ]
+        return self._recordings.get(root, force=force)
 
     def output_path(self) -> Path:
         configured = self.settings.load()["output_path"]
@@ -422,6 +410,7 @@ def make_handler(state: AppState, token: str):
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/stop":
                     state.recorder.stop()
+                    state._recordings.invalidate()
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/open-output":
                     open_in_file_manager(state.output_path())
