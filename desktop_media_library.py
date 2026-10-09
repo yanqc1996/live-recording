@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 
@@ -10,6 +12,49 @@ MEDIA_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a", ".jpg", ".jpe
 VIDEO_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv"}
 AUDIO_EXTENSIONS = {".mp3", ".m4a"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def group_recordings(files: list[dict]) -> list[dict]:
+    """Group recorder segments that share the same anchor and start timestamp."""
+    groups: dict[str, dict] = {}
+    pattern = re.compile(r"^(?P<prefix>.+)_(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})_(?P<part>\d{3,})$")
+    for item in files:
+        path = Path(str(item.get("path") or ""))
+        match = pattern.match(path.stem)
+        group_stem = f"{match.group('prefix')}_{match.group('date')}_{match.group('time')}" if match else path.stem
+        key = str(path.parent / group_stem)
+        group = groups.setdefault(key, {
+            "id": key,
+            "anchor": path.parent.name or (match.group("prefix") if match else path.stem),
+            "started_at": float(item.get("modified") or 0),
+            "latest_modified": 0.0,
+            "total_size": 0,
+            "segment_count": 0,
+            "formats": set(),
+            "files": [],
+        })
+        if match:
+            try:
+                group["started_at"] = datetime.strptime(
+                    f"{match.group('date')} {match.group('time')}", "%Y-%m-%d %H-%M-%S"
+                ).timestamp()
+            except ValueError:
+                pass
+        group["latest_modified"] = max(group["latest_modified"], float(item.get("modified") or 0))
+        group["total_size"] += int(item.get("size") or 0)
+        group["segment_count"] += 1
+        group["formats"].add(path.suffix.lstrip(".").upper())
+        group["files"].append(item)
+    result = []
+    for group in groups.values():
+        group["files"].sort(key=lambda item: float(item.get("modified") or 0), reverse=True)
+        group["path"] = group["files"][0].get("path", "")
+        group["name"] = group["files"][0].get("name", "")
+        group["format"] = "/".join(sorted(group.pop("formats")))
+        group["duration_seconds"] = max(0, int(group["latest_modified"] - group["started_at"]))
+        result.append(group)
+    result.sort(key=lambda group: group["latest_modified"], reverse=True)
+    return result
 
 
 def _kind(path: Path) -> str:

@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
-from desktop_media_library import MediaLibrary
+from desktop_media_library import MediaLibrary, group_recordings
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -253,6 +253,7 @@ def make_handler(state: AppState, token: str):
                     self.end_headers()
                     self.wfile.write(body)
                 elif path == "/api/state":
+                    recordings = state.recordings()
                     self._json({
                         "rooms": state.rooms.list(),
                         "anchors": state.anchors.list(),
@@ -263,7 +264,8 @@ def make_handler(state: AppState, token: str):
                         "update": state.updates.status(),
                         "interaction": state.interaction.status(),
                         "work_pull": state.work_pull.status(),
-                        "recordings": state.recordings(),
+                        "recordings": recordings,
+                        "recording_groups": group_recordings(recordings),
                     })
                 elif path == "/api/logs":
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
