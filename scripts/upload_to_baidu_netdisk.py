@@ -37,7 +37,9 @@ def stream_command(cmd: list[str]) -> int:
 
     assert process.stdout is not None
     for line in process.stdout:
-        print(line, end="")
+        # bypy redraws its progress bar with carriage returns. Flush every
+        # update so the desktop process can parse and display it immediately.
+        print(line, end="", flush=True)
 
     process.wait()
     return process.returncode

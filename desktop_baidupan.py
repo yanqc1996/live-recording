@@ -451,6 +451,7 @@ class BaiduPanUploadManager:
             process = subprocess.Popen(
                 cmd,
                 cwd=self.project_root,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
