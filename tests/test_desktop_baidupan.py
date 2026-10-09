@@ -7,6 +7,22 @@ from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_claims_only_configured_number_of_pending_uploads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([
+                {"id": str(index), "status": "pending", "attempts": 0, "created_at": index}
+                for index in range(3)
+            ])
+
+            claimed = manager._claim_pending_items(2)
+
+            self.assertEqual([item["id"] for item in claimed], ["0", "1"])
+            queue = manager._load_queue()
+            self.assertEqual([item["status"] for item in queue], ["uploading", "uploading", "pending"])
+            self.assertEqual([item["attempts"] for item in queue], [1, 1, 0])
+
     def test_verified_upload_can_cleanup_local_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

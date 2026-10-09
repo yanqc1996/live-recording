@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "cleanup_below_free_gb": 50,
     "wait_timeout": 900,
     "retries": 3,
+    "max_concurrent_uploads": 2,
     "bypy_bin": "__python_module_bypy__",
 }
 
@@ -78,10 +79,11 @@ class BaiduPanUploadManager:
         self._log_offset = 0
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
+        self._active_workers: dict[str, threading.Thread] = {}
         self._stop = threading.Event()
         self._auth_process: subprocess.Popen | None = None
         self._auth_state = {"status": "idle", "authorization_url": "", "message": "尚未授权", "output": ""}
-        self._progress = {"item_id": "", "file": "", "percent": 0}
+        self._progresses: dict[str, dict] = {}
         self._ensure_worker()
 
     def _append_log(self, line: str) -> None:
@@ -113,7 +115,7 @@ class BaiduPanUploadManager:
         config["group_by_anchor"] = bool(config.get("group_by_anchor"))
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["remote_dir"] = _normalize_remote_dir(config.get("remote_dir", ""))
-        for key in ("wait_timeout", "retries"):
+        for key in ("wait_timeout", "retries", "max_concurrent_uploads"):
             try:
                 config[key] = int(config.get(key) or DEFAULT_CONFIG[key])
             except (TypeError, ValueError):
@@ -125,6 +127,7 @@ class BaiduPanUploadManager:
                 config[key] = DEFAULT_CONFIG[key]
         config["wait_timeout"] = max(10, min(config["wait_timeout"], 24 * 3600))
         config["retries"] = max(1, min(config["retries"], 10))
+        config["max_concurrent_uploads"] = max(1, min(config["max_concurrent_uploads"], 3))
         config["keep_local_days"] = max(0, min(config["keep_local_days"], 3650))
         config["cleanup_below_free_gb"] = max(0, min(config["cleanup_below_free_gb"], 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()
@@ -141,6 +144,7 @@ class BaiduPanUploadManager:
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["wait_timeout"] = max(10, min(int(config.get("wait_timeout") or 900), 24 * 3600))
         config["retries"] = max(1, min(int(config.get("retries") or 3), 10))
+        config["max_concurrent_uploads"] = max(1, min(int(config.get("max_concurrent_uploads") or 2), 3))
         config["keep_local_days"] = max(0, min(int(config.get("keep_local_days") or 0), 3650))
         config["cleanup_below_free_gb"] = max(0, min(int(config.get("cleanup_below_free_gb") or 0), 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()
@@ -173,7 +177,8 @@ class BaiduPanUploadManager:
             "auth": dict(self._auth_state),
             "paused": bool(self.load_config().get("paused")),
             "pending_bytes": sum(int(item.get("file_size") or 0) for item in queue if item.get("status") in {"pending", "uploading"}),
-            "progress": dict(self._progress),
+            "progress": dict(next(iter(self._progresses.values()), {"item_id": "", "file": "", "percent": 0})),
+            "progresses": [dict(progress) for progress in self._progresses.values()],
         }
 
     def set_paused(self, paused: bool) -> dict:
@@ -377,18 +382,42 @@ class BaiduPanUploadManager:
         while not self._stop.is_set():
             if self.load_config().get("paused"):
                 return
-            item = None
             with self._lock:
-                queue = self._load_queue()
-                item = next((entry for entry in queue if entry.get("status") == "pending"), None)
-                if item:
-                    item["status"] = "uploading"
-                    item["attempts"] = int(item.get("attempts") or 0) + 1
-                    item["updated_at"] = int(time.time())
-                    self._save_queue(queue)
-            if not item:
+                self._active_workers = {
+                    item_id: worker for item_id, worker in self._active_workers.items() if worker.is_alive()
+                }
+                available = self.load_config()["max_concurrent_uploads"] - len(self._active_workers)
+            items = self._claim_pending_items(available)
+            for item in items:
+                worker = threading.Thread(target=self._run_item, args=(item,), daemon=True)
+                with self._lock:
+                    self._active_workers[item["id"]] = worker
+                worker.start()
+            with self._lock:
+                active = bool(self._active_workers)
+            if not items and not active:
                 return
-            self._run_item(item)
+            self._stop.wait(0.25)
+
+    def _claim_pending_items(self, limit: int) -> list[dict]:
+        if limit <= 0:
+            return []
+        claimed = []
+        now = int(time.time())
+        with self._lock:
+            queue = self._load_queue()
+            for item in queue:
+                if item.get("status") != "pending":
+                    continue
+                item["status"] = "uploading"
+                item["attempts"] = int(item.get("attempts") or 0) + 1
+                item["updated_at"] = now
+                claimed.append(dict(item))
+                if len(claimed) >= limit:
+                    break
+            if claimed:
+                self._save_queue(queue)
+        return claimed
 
     def _run_item(self, item: dict) -> None:
         if getattr(sys, "frozen", False):
@@ -416,7 +445,8 @@ class BaiduPanUploadManager:
             str(bool(item.get("converts_to_mp4"))),
         ])
         self._append_log(f"开始上传：{item.get('save_file_path')}")
-        self._progress = {"item_id": item["id"], "file": Path(item["save_file_path"]).name, "percent": 0}
+        with self._lock:
+            self._progresses[item["id"]] = {"item_id": item["id"], "file": Path(item["save_file_path"]).name, "percent": 0}
         try:
             process = subprocess.Popen(
                 cmd,
@@ -434,7 +464,9 @@ class BaiduPanUploadManager:
                 self._append_log(line)
                 percent = re.search(r"(?<!\d)(100|\d{1,2})(?:\.\d+)?%", line)
                 if percent:
-                    self._progress["percent"] = int(percent.group(1))
+                    with self._lock:
+                        if item["id"] in self._progresses:
+                            self._progresses[item["id"]]["percent"] = int(percent.group(1))
             return_code = process.wait()
             if return_code == 0:
                 self._finish_item(item["id"], "success", "", remote_verified=True)
@@ -447,7 +479,8 @@ class BaiduPanUploadManager:
             self._finish_item(item["id"], "failed", str(exc))
             self._append_log(f"上传异常：{exc}")
         finally:
-            self._progress = {"item_id": "", "file": "", "percent": 0}
+            with self._lock:
+                self._progresses.pop(item["id"], None)
 
     def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False) -> None:
         with self._lock:
