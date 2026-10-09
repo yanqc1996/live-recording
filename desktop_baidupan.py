@@ -261,7 +261,10 @@ class BaiduPanUploadManager:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "output": ""}
         output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-        return {"ok": result.returncode == 0, "returncode": result.returncode, "output": output[-4000:]}
+        ok = result.returncode == 0
+        if ok:
+            self._auth_state.update({"status": "authorized", "message": "百度网盘授权成功", "output": output[-4000:]})
+        return {"ok": ok, "returncode": result.returncode, "output": output[-4000:]}
 
     def enqueue_recording(
         self,
