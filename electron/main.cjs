@@ -15,6 +15,7 @@ let backend = null;
 let backendUrl = '';
 let backendToken = '';
 let quitting = false;
+let quitCheckInProgress = false;
 let syncTimer = null;
 let douyinSecurity = {};
 let normalWindowBounds = null;
@@ -455,8 +456,56 @@ else {
   });
 }
 
-app.on('before-quit', () => {
-  quitting = true;
-  if (backend && !backend.killed) backend.kill(process.platform === 'win32' ? undefined : 'SIGINT');
+app.on('before-quit', (event) => {
+  if (quitting) {
+    if (backend && !backend.killed) backend.kill(process.platform === 'win32' ? undefined : 'SIGINT');
+    return;
+  }
+  event.preventDefault();
+  if (quitCheckInProgress) return;
+  quitCheckInProgress = true;
+  (async () => {
+    let recording = false;
+    try {
+      if (backendUrl) {
+        const origin = new URL(backendUrl).origin;
+        const response = await fetch(`${origin}/api/state`, {
+          headers: { 'X-LiveRecorder-Token': backendToken }
+        });
+        if (response.ok) recording = Boolean((await response.json()).status?.running);
+      }
+    } catch {}
+    if (recording) {
+      const options = {
+        type: 'warning',
+        title: '正在录制直播',
+        message: '退出前需要先停止录制并保存视频',
+        detail: '保存和封装可能需要几秒钟，完成后应用会自动退出。',
+        buttons: ['停止录制并退出', '继续使用'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true
+      };
+      const result = mainWindow
+        ? await dialog.showMessageBox(mainWindow, options)
+        : await dialog.showMessageBox(options);
+      if (result.response !== 0) {
+        quitCheckInProgress = false;
+        return;
+      }
+      try {
+        await postBackend('/api/stop', {});
+      } catch (error) {
+        dialog.showErrorBox('无法安全停止录制', `${error.message}\n\n请在主界面停止录制后再退出。`);
+        quitCheckInProgress = false;
+        return;
+      }
+    }
+    quitting = true;
+    app.quit();
+  })().catch((error) => {
+    console.error(error);
+    quitCheckInProgress = false;
+  });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
