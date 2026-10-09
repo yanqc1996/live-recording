@@ -205,6 +205,7 @@ class WorkPullManager:
         self._status = {
             "running": False,
             "message": "未开始",
+            "access_mode": "anonymous",
             "user": None,
             "started_at": None,
             "finished_at": None,
@@ -235,12 +236,12 @@ class WorkPullManager:
         with self._lock:
             if self._status.get("running"):
                 raise ValueError("已有作品拉取任务正在运行")
-            if not self._cookie:
-                raise ValueError("请先登录抖音账号，再拉取用户作品")
+            access_mode = "authenticated" if self._cookie else "anonymous"
             self._stop.clear()
             self._set_status_locked(
                 running=True,
-                message="准备拉取",
+                message="准备拉取（登录增强）" if self._cookie else "准备拉取（匿名）",
+                access_mode=access_mode,
                 user=None,
                 started_at=_now(),
                 finished_at=None,
@@ -284,7 +285,6 @@ class WorkPullManager:
             {
                 "accept": "application/json, text/plain, */*",
                 "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "cookie": _cookie_string(cookies),
                 "referer": f"{DOUYIN_WEB_ORIGIN}/",
                 "user-agent": UA,
             }
@@ -365,6 +365,7 @@ class WorkPullManager:
         stats = {"fetched": 0, "new": 0, "skipped": 0, "downloaded": 0, "failed": 0}
         try:
             session = self._session(cookie)
+            self._log("访问模式：已登录增强" if cookie else "访问模式：匿名；若受抖音限制可登录后重试")
             sec_user_id = self._resolve_sec_user_id(session, user_url)
             profile = self._profile(session, sec_user_id)
             nickname = _sanitize_filename(profile["nickname"], 80)
@@ -429,7 +430,9 @@ class WorkPullManager:
                     if page.get("max_cursor") not in (None, ""):
                         detail.append(f"max_cursor={page.get('max_cursor')}")
                     if profile.get("aweme_count"):
-                        detail.append("资料页显示有作品，可能是作品接口被风控、Cookie 登录状态不足、签名参数失效或作品权限限制")
+                        detail.append(
+                            "资料页显示有作品，可能是作品接口被风控、登录状态不足、签名参数失效或作品权限限制"
+                        )
                     self._log("没有更多作品" + (f"（{'；'.join(detail)}）" if detail else ""))
                     break
                 for aweme in awemes:
@@ -499,6 +502,12 @@ class WorkPullManager:
             with self._lock:
                 self._set_status_locked(running=False, message="已完成", finished_at=_now(), stats=dict(stats))
         except Exception as exc:
-            self._log(f"拉取失败：{exc}")
+            suffix = "；匿名访问可能受到抖音限制，可登录后重试" if not cookie else ""
+            self._log(f"拉取失败：{exc}{suffix}")
             with self._lock:
-                self._set_status_locked(running=False, message=f"失败：{exc}", finished_at=_now(), stats=dict(stats))
+                self._set_status_locked(
+                    running=False,
+                    message=f"失败：{exc}{suffix}",
+                    finished_at=_now(),
+                    stats=dict(stats),
+                )

@@ -10,6 +10,8 @@ import base64
 import os
 import random
 import re
+import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -30,10 +32,49 @@ from douyin_static import Live_pb2
 
 DOUYIN_LIVE_ORIGIN = "https://live.douyin.com"
 DOUYIN_WEB_ORIGIN = "https://www.douyin.com"
+LOGIN_COOKIE_NAMES = {"LOGIN_STATUS", "sessionid", "sessionid_ss", "sid_guard"}
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 )
+
+
+def _audio_relay_command(ffmpeg: str, source_url: str) -> list[str]:
+    return [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_at_eof",
+        "1",
+        "-reconnect_delay_max",
+        "5",
+        "-rw_timeout",
+        "15000000",
+        "-user_agent",
+        UA,
+        "-headers",
+        f"Referer: {DOUYIN_LIVE_ORIGIN}/\r\n",
+        "-i",
+        source_url,
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        "-f",
+        "mp3",
+        "pipe:1",
+    ]
 
 
 def _asset_root() -> Path:
@@ -150,7 +191,7 @@ def _csrf_token(cookie_str: str) -> str:
 
 
 def _room_web_rid(value: str) -> str:
-    match = re.search(r"live\.douyin\.com/([^/?#\s]+)", value)
+    match = re.search(r"live\.douyin\.com/([^/?#\s,，]+)", value)
     if not match:
         raise ValueError("请输入 live.douyin.com 直播间地址")
     return match.group(1)
@@ -287,6 +328,7 @@ class DouyinAuthState:
     def from_cookie(cls, cookie: str, security: dict | None = None) -> "DouyinAuthState":
         cookies = _parse_cookie(cookie)
         _ms_token(cookies)
+        cookies.setdefault("xgplayer_user_id", str(random.randint(10**18, 10**19 - 1)))
         security = security or {}
         return cls(
             cookie=cookies,
@@ -300,7 +342,19 @@ class DouyinAuthState:
 
     @property
     def connected(self) -> bool:
-        return bool(self.cookie_str)
+        return any(self.cookie.get(name) not in {None, "", "0"} for name in LOGIN_COOKIE_NAMES)
+
+    @property
+    def access_mode(self) -> str:
+        return "authenticated" if self.connected else "anonymous"
+
+    def update_cookies(self, cookies: dict[str, str]) -> None:
+        for name, value in cookies.items():
+            if name and value:
+                self.cookie[str(name)] = str(value)
+        _ms_token(self.cookie)
+        self.cookie.setdefault("xgplayer_user_id", str(random.randint(10**18, 10**19 - 1)))
+        self.cookie_str = _cookie_string(self.cookie)
 
 
 @dataclass
@@ -331,6 +385,7 @@ def fetch_live_room_info(auth: DouyinAuthState, room_url: str) -> LiveRoomInfo:
         timeout=15,
         verify=False,
     )
+    auth.update_cookies(response.cookies.get_dict())
     soup = BeautifulSoup(response.text, "html.parser")
     for script_tag in soup.select("script"):
         script = script_tag.string or ""
@@ -427,8 +482,31 @@ def fetch_initial_live_response(auth: DouyinAuthState, info: LiveRoomInfo) -> Li
         timeout=15,
         verify=False,
     )
+    response.raise_for_status()
     live_response = Live_pb2.LiveResponse()
     live_response.ParseFromString(response.content)
+    return live_response
+
+
+def _decode_live_response(frame) -> Live_pb2.LiveResponse:
+    """Decode a webcast push payload without assuming every frame is gzipped."""
+    payload = bytes(frame.payload)
+    if not payload:
+        raise ValueError("直播间返回了空消息")
+
+    encoding = str(frame.payloadEncoding or "").strip().lower()
+    is_gzip = payload.startswith(b"\x1f\x8b")
+    if is_gzip or "gzip" in encoding:
+        try:
+            payload = gzip.decompress(payload)
+        except (EOFError, OSError):
+            # Some gateways have already decompressed the payload but leave the
+            # original payloadEncoding metadata on the frame.
+            if is_gzip:
+                raise
+
+    live_response = Live_pb2.LiveResponse()
+    live_response.ParseFromString(payload)
     return live_response
 
 
@@ -566,7 +644,7 @@ def fetch_gift_rank(auth: DouyinAuthState, room_url: str) -> dict:
             "ranks": [],
             "total": 0,
             "raw_status": response.status_code,
-            "raw_message": f"礼物榜接口暂不可用（HTTP {response.status_code}），可能未开播、登录失效或接口被风控",
+            "raw_message": f"礼物榜接口暂不可用（HTTP {response.status_code}），可能未开播、匿名访问受限、登录失效或接口被风控",
         }
     text_preview = (response.text or "").strip()[:200]
     try:
@@ -579,7 +657,7 @@ def fetch_gift_rank(auth: DouyinAuthState, room_url: str) -> dict:
             "total": 0,
             "raw_status": response.status_code,
             "raw_message": (
-                "礼物榜接口返回了非 JSON 数据，可能未开播、登录失效或接口被风控"
+                "礼物榜接口返回了非 JSON 数据，可能未开播、匿名访问受限、登录失效或接口被风控"
                 + (f"：{text_preview}" if text_preview else "")
             ),
             "content_type": content_type,
@@ -670,7 +748,14 @@ class DouyinLiveSession:
 
     def start(self) -> None:
         self.info = fetch_live_room_info(self.auth, self.room_url)
-        initial = fetch_initial_live_response(self.auth, self.info)
+        try:
+            initial = fetch_initial_live_response(self.auth, self.info)
+        except Exception:
+            # The HTTP bootstrap endpoint is occasionally rejected by Douyin
+            # with an HTML/JSON risk-control response. The websocket can still
+            # establish its own cursor, so do not abort listening here.
+            initial = Live_pb2.LiveResponse()
+            self.on_event({"type": "system", "message": "初始化接口暂不可用，正在直接连接弹幕服务…"})
         params = {
             "app_name": "douyin_web",
             "version_code": "180800",
@@ -745,10 +830,13 @@ class DouyinLiveSession:
 
     def _on_message(self, ws, message: bytes) -> None:
         try:
+            if isinstance(message, str):
+                return
             frame = Live_pb2.PushFrame()
             frame.ParseFromString(message)
-            response = Live_pb2.LiveResponse()
-            response.ParseFromString(gzip.decompress(frame.payload))
+            if frame.payloadType in {"hb", "ack"} or not frame.payload:
+                return
+            response = _decode_live_response(frame)
             if response.needAck:
                 ack = Live_pb2.PushFrame()
                 ack.payloadType = "ack"
@@ -794,15 +882,18 @@ class DouyinLiveSession:
 class DouyinInteractionManager:
     def __init__(self):
         self._lock = threading.RLock()
-        self._auth = DouyinAuthState()
+        self._auth = DouyinAuthState.from_cookie("")
         self._session: DouyinLiveSession | None = None
         self._thread: threading.Thread | None = None
         self._events: deque[dict] = deque(maxlen=1500)
         self._offset = 0
         self._room_url = ""
-        self._audio_process: subprocess.Popen | None = None
+        self._audio_process: subprocess.Popen[bytes] | None = None
+        self._audio_source_url = ""
+        self._audio_stream_id = ""
 
     def set_auth(self, cookie: str, security: dict | None = None) -> None:
+        self.stop_audio()
         with self._lock:
             self._auth = DouyinAuthState.from_cookie(cookie, security)
 
@@ -814,9 +905,11 @@ class DouyinInteractionManager:
         with self._lock:
             return {
                 "connected": self.connected,
+                "access_mode": self._auth.access_mode,
+                "public_access": True,
                 "listening": bool(self._thread and self._thread.is_alive()),
                 "room_url": self._room_url,
-                "can_send": self._auth.security.complete,
+                "can_send": self.connected and self._auth.security.complete,
                 "audio_playing": bool(self._audio_process and self._audio_process.poll() is None),
             }
 
@@ -833,15 +926,19 @@ class DouyinInteractionManager:
             return {"cursor": self._offset + len(self._events), "events": list(self._events)[start:]}
 
     def start_listening(self, room_url: str) -> dict:
-        if not self.connected:
-            raise RuntimeError("请先登录抖音账号")
+        room_url = room_url.strip()
+        if not room_url:
+            raise ValueError("请先选择直播间")
+        if "live.douyin.com/" in room_url:
+            room_url = f"{DOUYIN_LIVE_ORIGIN}/{_room_web_rid(room_url)}"
         self.stop_listening()
         with self._lock:
-            self._room_url = room_url.strip()
+            self._room_url = room_url
             self._session = DouyinLiveSession(self._room_url, self._auth, self._append)
             self._thread = threading.Thread(target=self._run_session, daemon=True)
             self._thread.start()
-        self._append({"type": "system", "message": "正在连接直播间弹幕…"})
+        mode = "登录增强模式" if self.connected else "匿名模式"
+        self._append({"type": "system", "message": f"正在以{mode}连接直播间弹幕…"})
         return self.status()
 
     def _run_session(self) -> None:
@@ -849,7 +946,10 @@ class DouyinInteractionManager:
             assert self._session is not None
             self._session.start()
         except Exception as exc:
-            self._append({"type": "error", "message": str(exc)})
+            message = str(exc)
+            if not self.connected:
+                message += "；匿名访问可能受到抖音限制，可登录后重试"
+            self._append({"type": "error", "message": message})
 
     def stop_listening(self) -> dict:
         with self._lock:
@@ -867,6 +967,8 @@ class DouyinInteractionManager:
             raise ValueError("弹幕内容不能为空")
         if not self._room_url:
             raise ValueError("请先选择直播间并启动监听")
+        if not self.connected:
+            raise RuntimeError("发送弹幕属于账号操作，请先登录抖音账号")
         if not self._auth.security.complete:
             raise RuntimeError("当前仅同步了 Cookie，缺少发送弹幕所需的 web_protect 安全字段")
         info = fetch_live_room_info(self._auth, self._room_url)
@@ -916,33 +1018,138 @@ class DouyinInteractionManager:
         return {"ok": True, "result": result}
 
     def audio_source(self, room_url: str, quality: str = "原画") -> dict:
-        if not self.connected:
-            raise RuntimeError("请先登录抖音账号")
         from src import spider, stream
 
         room_url = room_url.strip()
-        data = asyncio.run(spider.get_douyin_web_stream_data(room_url, cookies=self._auth.cookie_str))
-        info = asyncio.run(stream.get_douyin_stream_url(data, quality, ""))
-        if not info.get("is_live"):
-            raise RuntimeError("直播间未开播或无法取得音频源")
-        url = info.get("m3u8_url") or info.get("flv_url") or info.get("record_url")
+        if not room_url:
+            raise ValueError("请先选择直播间")
+        if "live.douyin.com/" in room_url:
+            room_url = f"{DOUYIN_LIVE_ORIGIN}/{_room_web_rid(room_url)}"
+
+        # The public room page issues cookies such as ``ttwid``. Calling the
+        # webcast enter API with only the generated anonymous cookies is often
+        # classified as risk traffic, even though the room page itself is
+        # accessible. Warm the public session first and retry once when Douyin
+        # returns an empty/non-live response.
+        confirmed_live = False
+        try:
+            room_info = fetch_live_room_info(self._auth, room_url)
+            confirmed_live = _is_live_status(room_info.status)
+        except Exception:
+            room_info = None
+
+        info: dict = {}
+        last_error: Exception | None = None
+        for attempt in range(2):
+            if attempt:
+                try:
+                    room_info = fetch_live_room_info(self._auth, room_url)
+                    confirmed_live = confirmed_live or _is_live_status(room_info.status)
+                except Exception:
+                    pass
+            try:
+                data = asyncio.run(
+                    spider.get_douyin_web_stream_data(room_url, cookies=self._auth.cookie_str)
+                )
+                info = asyncio.run(stream.get_douyin_stream_url(data, quality, "")) or {}
+            except Exception as exc:
+                last_error = exc
+                continue
+            if info.get("is_live") and (
+                info.get("flv_url") or info.get("m3u8_url") or info.get("record_url")
+            ):
+                break
+        else:
+            if confirmed_live:
+                raise RuntimeError("直播间已确认开播，但音频源接口暂时受限；已自动重试，请稍后再试") from last_error
+            if last_error:
+                raise RuntimeError(f"无法获取直播音频：{last_error}；已自动刷新匿名会话并重试") from last_error
+            raise RuntimeError("直播间未开播或暂时无法取得音频源；已自动刷新匿名会话并重试")
+
+        # The FLV pull URL is more reliable for FFmpeg than Douyin's HLS
+        # playlist, whose media segments may reject a request after the
+        # playlist itself passed the availability probe.
+        url = info.get("flv_url") or info.get("m3u8_url") or info.get("record_url")
+        if not url:
+            raise RuntimeError("直播间已开播，但没有可用的音频流地址")
+        self.stop_audio()
+        stream_id = secrets.token_urlsafe(18)
+        with self._lock:
+            self._audio_source_url = str(url)
+            self._audio_stream_id = stream_id
         return {
-            "url": url,
+            "stream_id": stream_id,
             "title": info.get("title", ""),
             "anchor_name": info.get("anchor_name", ""),
             "quality": info.get("quality", quality),
-            "format": "hls" if ".m3u8" in str(url) else "flv",
+            "format": "mp3",
+            "source_format": "hls" if ".m3u8" in str(url) else "flv",
+            "access_mode": self._auth.access_mode,
         }
 
+    def start_audio_stream(self, stream_id: str) -> subprocess.Popen[bytes]:
+        self.stop_audio()
+        with self._lock:
+            if not stream_id or stream_id != self._audio_stream_id or not self._audio_source_url:
+                raise ValueError("音频播放凭证已失效，请重新获取音频源")
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                raise RuntimeError("缺少 FFmpeg，无法转换直播音频")
+            kwargs: dict = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            process = subprocess.Popen(
+                _audio_relay_command(ffmpeg, self._audio_source_url),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+                **kwargs,
+            )
+            self._audio_process = process
+            return process
+
+    def finish_audio_stream(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            if self._audio_process is process:
+                self._audio_process = None
+        self._terminate_audio_process(process)
+
+    def stop_audio(self) -> None:
+        with self._lock:
+            process = self._audio_process
+            self._audio_process = None
+        if process:
+            self._terminate_audio_process(process)
+
+    @staticmethod
+    def _terminate_audio_process(process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+
     def gift_rank(self, room_url: str) -> dict:
-        if not self.connected:
-            raise RuntimeError("请先登录抖音账号")
         room_url = (room_url or self._room_url).strip()
         if not room_url:
             raise ValueError("请先选择直播间")
-        return fetch_gift_rank(self._auth, room_url)
+        try:
+            result = fetch_gift_rank(self._auth, room_url)
+        except Exception as exc:
+            suffix = "；匿名访问可能受到抖音限制，可登录后重试" if not self.connected else ""
+            raise RuntimeError(f"无法获取礼物贡献榜：{exc}{suffix}") from exc
+        result["access_mode"] = self._auth.access_mode
+        return result
 
     def resolve_live_room(self, value: str) -> dict:
-        if not self.connected:
-            raise RuntimeError("请先登录抖音账号")
-        return resolve_live_room(self._auth, value)
+        try:
+            result = resolve_live_room(self._auth, value)
+        except Exception as exc:
+            suffix = "；匿名访问可能受到抖音限制，可登录后重试" if not self.connected else ""
+            raise RuntimeError(f"无法解析直播间：{exc}{suffix}") from exc
+        result["access_mode"] = self._auth.access_mode
+        return result

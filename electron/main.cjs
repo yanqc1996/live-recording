@@ -2,10 +2,10 @@ const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electro
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { LOGIN_COOKIE_NAMES, parseCookieHeader } = require('./douyin-cookie.cjs');
 
 const DOUYIN_PARTITION = 'persist:douyin-auth';
 const DOUYIN_LOGIN_URL = 'https://www.douyin.com/';
-const LOGIN_COOKIE_NAMES = new Set(['LOGIN_STATUS', 'sessionid', 'sessionid_ss', 'sid_guard']);
 
 app.setName('播录助手');
 
@@ -17,6 +17,7 @@ let backendToken = '';
 let quitting = false;
 let syncTimer = null;
 let douyinSecurity = {};
+let normalWindowBounds = null;
 
 function allowedDouyinUrl(rawUrl) {
   try {
@@ -235,9 +236,10 @@ async function refreshDouyinSecurity(roomUrl = '') {
     await new Promise((resolve) => setTimeout(resolve, 1200));
   }
   const cookies = await douyinCookies();
+  const connected = hasLoginCookie(cookies);
   return {
-    connected: hasLoginCookie(cookies),
-    canSend: securityStatus().complete,
+    connected,
+    canSend: connected && securityStatus().complete,
     security: securityStatus()
   };
 }
@@ -258,7 +260,7 @@ async function syncDouyinSession() {
     ? cookies.sort((a, b) => a.name.localeCompare(b.name)).map(({ name, value }) => `${name}=${value}`).join('; ')
     : '';
   await postBackend('/api/auth/douyin', { cookie, security: douyinSecurity });
-  const status = { connected, canSend: securityStatus().complete, security: securityStatus() };
+  const status = { connected, canSend: connected && securityStatus().complete, security: securityStatus() };
   mainWindow?.webContents.send('douyin:status-changed', status);
   return status;
 }
@@ -321,6 +323,40 @@ async function logoutDouyin() {
   return syncDouyinSession();
 }
 
+async function importDouyinCookie(rawCookie) {
+  const imported = parseCookieHeader(rawCookie);
+  const authSession = session.fromPartition(DOUYIN_PARTITION);
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.removeAllListeners('closed');
+    loginWindow.close();
+    loginWindow = null;
+  }
+  const existing = await douyinCookies();
+  await Promise.all(existing.map((cookie) => {
+    const domain = (cookie.domain || 'www.douyin.com').replace(/^\./, '');
+    const protocol = cookie.secure ? 'https' : 'http';
+    return authSession.cookies.remove(`${protocol}://${domain}${cookie.path || '/'}`, cookie.name);
+  }));
+  await authSession.clearStorageData({ storages: ['localstorage', 'cachestorage', 'serviceworkers'] });
+  douyinSecurity = {};
+  const expirationDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+  await Promise.all(imported.map(({ name, value }) => {
+    const cookie = {
+      url: DOUYIN_LOGIN_URL,
+      name,
+      value,
+      path: '/',
+      secure: true,
+      httpOnly: false,
+      expirationDate
+    };
+    if (!name.startsWith('__Host-')) cookie.domain = '.douyin.com';
+    return authSession.cookies.set(cookie);
+  }));
+  await authSession.cookies.flushStore();
+  return syncDouyinSession();
+}
+
 function registerIpc() {
   ipcMain.handle('douyin:login', (event) => {
     validateMainSender(event);
@@ -329,11 +365,16 @@ function registerIpc() {
   });
   ipcMain.handle('douyin:status', async (event) => {
     validateMainSender(event);
-    return { connected: hasLoginCookie(await douyinCookies()), canSend: securityStatus().complete, security: securityStatus() };
+    const connected = hasLoginCookie(await douyinCookies());
+    return { connected, canSend: connected && securityStatus().complete, security: securityStatus() };
   });
   ipcMain.handle('douyin:refresh-security', async (event, roomUrl) => {
     validateMainSender(event);
     return refreshDouyinSecurity(String(roomUrl || ''));
+  });
+  ipcMain.handle('douyin:import-cookie', async (event, rawCookie) => {
+    validateMainSender(event);
+    return importDouyinCookie(String(rawCookie || ''));
   });
   ipcMain.handle('douyin:logout', async (event) => {
     validateMainSender(event);
@@ -343,6 +384,28 @@ function registerIpc() {
     validateMainSender(event);
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0];
+  });
+  ipcMain.handle('window:compact-mode', (event, enabled) => {
+    validateMainSender(event);
+    if (!mainWindow) throw new Error('主窗口尚未就绪');
+    const compact = Boolean(enabled);
+    if (compact) {
+      if (!normalWindowBounds) normalWindowBounds = mainWindow.getBounds();
+      mainWindow.setMinimumSize(390, 560);
+      mainWindow.setAlwaysOnTop(true, 'floating');
+      mainWindow.setBounds({
+        x: normalWindowBounds.x + Math.max(0, normalWindowBounds.width - 430),
+        y: normalWindowBounds.y,
+        width: 430,
+        height: 720
+      }, true);
+    } else {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setMinimumSize(940, 680);
+      if (normalWindowBounds) mainWindow.setBounds(normalWindowBounds, true);
+      normalWindowBounds = null;
+    }
+    return { compact, alwaysOnTop: mainWindow.isAlwaysOnTop() };
   });
 }
 

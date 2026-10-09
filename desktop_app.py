@@ -20,7 +20,6 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
-from desktop_license import LicenseManager
 from desktop_media_library import MediaLibrary
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
@@ -57,9 +56,16 @@ class LazyDouyinInteraction:
         if self._manager is None:
             return {
                 "connected": bool(self._cookie),
+                "access_mode": "authenticated" if self._cookie else "anonymous",
+                "public_access": True,
                 "listening": False,
                 "room_url": "",
-                "can_send": bool(self._security.get("ticket") and self._security.get("ts_sign") and self._security.get("private_key")),
+                "can_send": bool(
+                    self._cookie
+                    and self._security.get("ticket")
+                    and self._security.get("ts_sign")
+                    and self._security.get("private_key")
+                ),
                 "audio_playing": False,
             }
         return self._manager.status()
@@ -79,6 +85,17 @@ class LazyDouyinInteraction:
     def audio_source(self, room_url: str, quality: str = "原画") -> dict:
         return self._load().audio_source(room_url, quality)
 
+    def start_audio_stream(self, stream_id: str):
+        return self._load().start_audio_stream(stream_id)
+
+    def finish_audio_stream(self, process) -> None:
+        if self._manager is not None:
+            self._manager.finish_audio_stream(process)
+
+    def stop_audio(self) -> None:
+        if self._manager is not None:
+            self._manager.stop_audio()
+
     def gift_rank(self, room_url: str) -> dict:
         return self._load().gift_rank(room_url)
 
@@ -91,7 +108,6 @@ class AppState:
         self.rooms = RoomStore(PROJECT_ROOT / "config" / "URL_config.ini")
         self.anchors = AnchorStore(PROJECT_ROOT / "config" / "anchors.json")
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
-        self.license = LicenseManager(PROJECT_ROOT / "config" / "license.json")
         self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._last_recording_candidate: dict | None = None
@@ -140,22 +156,15 @@ class AppState:
             updates = {"last_resolved_at": int(time.time()), "last_check_error": ""}
             live_room = None
             try:
-                if "live.douyin.com/" in value and not self.interaction.status().get("connected"):
-                    updates.update({
-                        "live_url": value.split("?")[0],
-                        "last_live_status": "unknown",
-                        "last_check_error": "未登录，已保留直播间地址但未校验开播状态",
-                    })
-                else:
-                    live_room = self.interaction.resolve_live_room(value)
-                    updates.update({
-                        "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
-                        "web_rid": live_room.get("web_rid", ""),
-                        "room_id": live_room.get("room_id", ""),
-                        "last_live_status": "live" if live_room.get("is_live") else "offline",
-                    })
-                    if live_room.get("nickname"):
-                        updates["name"] = live_room["nickname"]
+                live_room = self.interaction.resolve_live_room(value)
+                updates.update({
+                    "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
+                    "web_rid": live_room.get("web_rid", ""),
+                    "room_id": live_room.get("room_id", ""),
+                    "last_live_status": "live" if live_room.get("is_live") else "offline",
+                })
+                if live_room.get("nickname"):
+                    updates["name"] = live_room["nickname"]
                 updated = self.anchors.update(anchor_id, updates)
                 results.append({"anchor": updated, "live_room": live_room, "ok": True})
             except Exception as exc:
@@ -188,10 +197,6 @@ class AppState:
     def output_path(self) -> Path:
         configured = self.settings.load()["output_path"]
         return Path(configured) if configured else PROJECT_ROOT / "downloads"
-
-    def require_license(self) -> None:
-        self.license.assert_active()
-
 
 def open_in_file_manager(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -255,7 +260,6 @@ def make_handler(state: AppState, token: str):
                         "status": state.recorder.status(),
                         "baidupan": state.uploads.status(),
                         "auth": {"douyin_connected": state.recorder.has_douyin_session},
-                        "license": state.license.status(),
                         "update": state.updates.status(),
                         "interaction": state.interaction.status(),
                         "work_pull": state.work_pull.status(),
@@ -267,6 +271,33 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/interaction/events":
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
                     self._json(state.interaction.events(cursor))
+                elif path == "/api/interaction/audio-stream":
+                    stream_id = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+                    process = state.interaction.start_audio_stream(stream_id)
+                    if not process.stdout:
+                        state.interaction.finish_audio_stream(process)
+                        raise RuntimeError("无法读取 FFmpeg 音频输出")
+                    first_chunk = process.stdout.read(4096)
+                    if not first_chunk:
+                        state.interaction.finish_audio_stream(process)
+                        raise RuntimeError("FFmpeg 未能转换直播音频，请重新获取音频源")
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    try:
+                        self.wfile.write(first_chunk)
+                        while True:
+                            chunk = process.stdout.read(64 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    except (ConnectionResetError, OSError):
+                        pass
+                    finally:
+                        state.interaction.finish_audio_stream(process)
                 elif path == "/api/work-pull/logs":
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
                     self._json(state.work_pull.logs(cursor))
@@ -290,11 +321,9 @@ def make_handler(state: AppState, token: str):
             try:
                 body = self._body()
                 if path == "/api/rooms":
-                    state.require_license()
                     state.rooms.add(body.get("value", ""))
                     self._json({"rooms": state.rooms.list()}, HTTPStatus.CREATED)
                 elif path == "/api/anchors":
-                    state.require_license()
                     anchor = state.anchors.add(
                         str(body.get("name", "")),
                         str(body.get("profile_url", "")),
@@ -302,7 +331,6 @@ def make_handler(state: AppState, token: str):
                     )
                     self._json({"anchor": anchor, "anchors": state.anchors.list()}, HTTPStatus.CREATED)
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "resolve":
-                    state.require_license()
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
                     if not anchor:
@@ -320,7 +348,6 @@ def make_handler(state: AppState, token: str):
                     anchor = state.anchors.update(anchor_id, updates)
                     self._json({"anchor": anchor, "live_room": live_room, "anchors": state.anchors.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "use-recording":
-                    state.require_license()
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
                     if not anchor:
@@ -350,18 +377,12 @@ def make_handler(state: AppState, token: str):
                     room = state.rooms.upsert_active(live_url)
                     self._json({"anchor": anchor, "room": room, "rooms": state.rooms.list(), "live_room": live_room})
                 elif path == "/api/anchors/check-live":
-                    state.require_license()
                     self._json(state.check_anchors_live_status())
                 elif len(parts) == 3 and parts[:2] == ["api", "rooms"]:
-                    state.require_license()
                     state.rooms.set_active(int(parts[2]), bool(body.get("active")))
                     self._json({"rooms": state.rooms.list()})
                 elif path == "/api/settings":
                     self._json({"settings": state.settings.save(body)})
-                elif path == "/api/license/activate":
-                    self._json({"license": state.license.activate(str(body.get("code", "")))})
-                elif path == "/api/license/deactivate":
-                    self._json({"license": state.license.deactivate()})
                 elif path == "/api/update/settings":
                     self._json({"update": state.updates.save_config(str(body.get("manifest_url", "")))})
                 elif path == "/api/update/check":
@@ -369,13 +390,10 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/update/open-download":
                     self._json(state.updates.open_download(str(body.get("url", ""))))
                 elif path == "/api/baidupan/settings":
-                    state.require_license()
                     self._json({"baidupan": state.uploads.save_config(body), "status": state.uploads.status()})
                 elif path == "/api/baidupan/check":
-                    state.require_license()
                     self._json({"check": state.uploads.check_auth(), "baidupan": state.uploads.status()})
                 elif path == "/api/baidupan/enqueue":
-                    state.require_license()
                     item = state.uploads.enqueue_recording(
                         str(body.get("save_file_path", "")),
                         record_name=str(body.get("record_name", "")),
@@ -386,21 +404,17 @@ def make_handler(state: AppState, token: str):
                     )
                     self._json({"item": item, "baidupan": state.uploads.status()}, HTTPStatus.CREATED)
                 elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "retry":
-                    state.require_license()
                     item = state.uploads.retry(parts[2])
                     self._json({"item": item, "baidupan": state.uploads.status()})
                 elif path == "/api/baidupan/clear-finished":
-                    state.require_license()
                     self._json({"baidupan": state.uploads.clear_finished()})
                 elif path == "/api/start":
-                    state.require_license()
                     if not any(room["active"] for room in state.rooms.list()):
                         raise ValueError("请至少启用一个直播间")
                     state.settings.save(body.get("settings", {}))
                     state.recorder.start()
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/stop":
-                    state.require_license()
                     state.recorder.stop()
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/open-output":
@@ -429,30 +443,26 @@ def make_handler(state: AppState, token: str):
                     state.work_pull.set_auth(str(body.get("cookie", "")))
                     self._json({"connected": state.recorder.has_douyin_session})
                 elif path == "/api/interaction/start":
-                    state.require_license()
                     self._json({"interaction": state.interaction.start_listening(str(body.get("room_url", "")))})
                 elif path == "/api/interaction/stop":
-                    state.require_license()
                     self._json({"interaction": state.interaction.stop_listening()})
                 elif path == "/api/interaction/send":
-                    state.require_license()
                     self._json(state.interaction.send_chat(str(body.get("content", ""))))
                 elif path == "/api/interaction/audio-source":
-                    state.require_license()
                     self._json({
                         "audio": state.interaction.audio_source(
                             str(body.get("room_url", "")),
                             str(body.get("quality", "原画")),
                         )
                     })
+                elif path == "/api/interaction/audio-stop":
+                    state.interaction.stop_audio()
+                    self._json({"ok": True})
                 elif path == "/api/interaction/gift-rank":
-                    state.require_license()
                     self._json({"gift_rank": state.interaction.gift_rank(str(body.get("room_url", "")))})
                 elif path == "/api/douyin/resolve-live-room":
-                    state.require_license()
                     self._json({"live_room": state.interaction.resolve_live_room(str(body.get("url", "")))})
                 elif path == "/api/work-pull/start":
-                    state.require_license()
                     self._json({
                         "work_pull": state.work_pull.start(
                             str(body.get("user_url", "")),
@@ -472,11 +482,9 @@ def make_handler(state: AppState, token: str):
             _, parts = self._route()
             try:
                 if len(parts) == 3 and parts[:2] == ["api", "rooms"]:
-                    state.require_license()
                     state.rooms.delete(int(parts[2]))
                     self._json({"rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
-                    state.require_license()
                     state.anchors.delete(parts[2])
                     self._json({"anchors": state.anchors.list()})
                 else:
@@ -518,6 +526,7 @@ def main() -> None:
         pass
     finally:
         state.recorder.stop()
+        state.interaction.stop_audio()
         state.interaction.stop_listening()
         server.server_close()
 
