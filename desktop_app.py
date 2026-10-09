@@ -111,7 +111,7 @@ class AppState:
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
         self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION, BUILD_COMMIT)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
-        self._last_recording_candidate: dict | None = None
+        self._recording_candidates: dict[str, dict] = {}
         self._recordings = RecentRecordingCache()
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
         self.interaction = LazyDouyinInteraction()
@@ -120,8 +120,9 @@ class AppState:
     def _on_recorder_log(self, line: str) -> None:
         candidate_match = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if candidate_match:
-            self._last_recording_candidate = {
-                "record_name": candidate_match.group("name").strip(),
+            record_name = candidate_match.group("name").strip()
+            self._recording_candidates[record_name] = {
+                "record_name": record_name,
                 "save_file_path": candidate_match.group("path").strip(),
                 "created_at": time.time(),
             }
@@ -131,7 +132,11 @@ class AppState:
         config = self.uploads.load_config()
         if not (config.get("enabled") and config.get("auto_upload")):
             return
-        candidate = self._last_recording_candidate
+        completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成", line.strip())
+        completed_name = completed_match.group("name").strip() if completed_match else ""
+        candidate = self._recording_candidates.pop(completed_name, None)
+        if not candidate and self._recording_candidates:
+            candidate = max(self._recording_candidates.values(), key=lambda item: float(item.get("created_at") or 0))
         if not candidate or time.time() - float(candidate.get("created_at") or 0) > 24 * 3600:
             return
         settings = self.settings.load()
