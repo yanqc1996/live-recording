@@ -17,6 +17,22 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 RECORDING_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a"}
 
 
+def scan_recordings(root: Path, limit: int | None = 100) -> list[dict]:
+    if not root.exists():
+        return []
+    files = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in RECORDING_EXTENSIONS:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append({"name": path.name, "path": str(path), "size": stat.st_size, "modified": stat.st_mtime})
+    files.sort(key=lambda item: item["modified"], reverse=True)
+    return files if limit is None else files[:limit]
+
+
 class RecentRecordingCache:
     """Avoid repeatedly walking a large recording tree for frequent state polls."""
 
@@ -45,24 +61,7 @@ class RecentRecordingCache:
             self._expires_at = 0.0
 
     def _scan(self, root: Path) -> list[dict]:
-        if not root.exists():
-            return []
-        files = []
-        for path in root.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in RECORDING_EXTENSIONS:
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            files.append({
-                "name": path.name,
-                "path": str(path),
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-            })
-        files.sort(key=lambda item: item["modified"], reverse=True)
-        return files[:self.limit]
+        return scan_recordings(root, self.limit)
 
 
 def group_recordings(files: list[dict]) -> list[dict]:

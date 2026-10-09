@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
-from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings
+from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, scan_recordings
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -182,6 +182,9 @@ class AppState:
         settings = self.settings.load()
         root = Path(settings["output_path"]) if settings["output_path"] else PROJECT_ROOT / "downloads"
         return self._recordings.get(root, force=force)
+
+    def recording_archive_groups(self) -> list[dict]:
+        return group_recordings(scan_recordings(self.output_path(), limit=None))
 
     def output_path(self) -> Path:
         configured = self.settings.load()["output_path"]
@@ -402,6 +405,8 @@ def make_handler(state: AppState, token: str):
                         source=str(body.get("source", "manual")),
                     )
                     self._json({"item": item, "baidupan": state.uploads.status()}, HTTPStatus.CREATED)
+                elif path == "/api/baidupan/enqueue-archive":
+                    self._json(state.uploads.enqueue_archive(state.recording_archive_groups()), HTTPStatus.CREATED)
                 elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "retry":
                     item = state.uploads.retry(parts[2])
                     self._json({"item": item, "baidupan": state.uploads.status()})

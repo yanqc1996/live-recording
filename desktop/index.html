@@ -161,7 +161,7 @@
           <div class="field"><label>失败重试次数</label><input id="baiduRetries" type="number" min="1" max="10"></div>
           <div class="field wide"><label>bypy 命令</label><input id="baiduBypyBin" placeholder="__python_module_bypy__"></div>
         </div>
-        <div class="runbar"><button id="checkBaidupan" class="quiet">检测授权</button><button id="uploadLatest" class="primary">上传最近录像</button><button id="clearUploadFinished" class="quiet">清理已结束</button></div>
+        <div class="runbar"><button id="checkBaidupan" class="quiet">检测授权</button><button id="uploadLatest" class="primary">上传最近录像</button><button id="uploadArchive" class="primary">归档全部历史录像</button><button id="clearUploadFinished" class="quiet">清理已结束</button></div>
         <div class="runbar"><button id="startBaiduAuth" class="primary">开始百度授权</button><button id="openBaiduAuth" class="quiet" disabled>打开授权页面</button><input id="baiduAuthCode" placeholder="粘贴授权码"><button id="submitBaiduAuth" class="quiet">提交授权码</button></div>
         <div id="baidupanHint" class="hint">打包版会内置 bypy，不需要用户安装 Python 或命令行工具；首次使用只需完成百度网盘账号授权。</div>
         <div id="uploadQueue" class="file-list"><div class="empty">暂无上传任务</div></div>
@@ -393,6 +393,7 @@ $('startBaiduAuth').onclick=async()=>{try{const data=await api('/api/baidupan/au
 $('openBaiduAuth').onclick=()=>{const url=$('openBaiduAuth').dataset.url;if(url)window.desktop?.openExternal(url)};
 $('submitBaiduAuth').onclick=async()=>{try{const data=await api('/api/baidupan/auth/submit',{method:'POST',body:JSON.stringify({code:$('baiduAuthCode').value})});$('baiduAuthCode').value='';renderUploadStatus(data.baidupan);toast('授权码已提交，正在验证')}catch(e){toast(e.message,true)}};
 $('uploadLatest').onclick=async()=>{try{if(!latestRecordings.length)throw new Error('还没有可上传的本地录像');const f=latestRecordings[0];const data=await api('/api/baidupan/enqueue',{method:'POST',body:JSON.stringify({save_file_path:f.path,record_name:f.name,save_type:(f.name.split('.').pop()||'TS').toUpperCase(),source:'manual'})});renderUploadStatus(data.baidupan);toast('最近录像已加入上传队列')}catch(e){toast(e.message,true)}};
+$('uploadArchive').onclick=async()=>{if(!confirm('将扫描全部历史录像并加入百度网盘上传队列，继续吗？'))return;try{$('uploadArchive').disabled=true;const data=await api('/api/baidupan/enqueue-archive',{method:'POST',body:'{}'});renderUploadStatus(data.status);toast(`历史归档已排队：新增 ${data.added} 个文件，跳过 ${data.existing} 个`)}catch(e){toast(e.message,true)}finally{$('uploadArchive').disabled=false}};
 $('clearUploadFinished').onclick=async()=>{try{const data=await api('/api/baidupan/clear-finished',{method:'POST',body:'{}'});renderUploadStatus(data.baidupan);toast('已清理结束的上传任务')}catch(e){toast(e.message,true)}};
 $('start').onclick=async()=>{
   if(recordingBusy)return;

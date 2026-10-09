@@ -2,7 +2,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from desktop_media_library import RecentRecordingCache, group_recordings
+from desktop_media_library import RecentRecordingCache, group_recordings, scan_recordings
 
 
 class RecordingGroupsTest(unittest.TestCase):
@@ -33,6 +33,14 @@ class RecordingGroupsTest(unittest.TestCase):
 
             cache.invalidate()
             self.assertEqual({"first.mp4", "second.mp4"}, {item["name"] for item in cache.get(root)})
+
+    def test_full_recording_scan_is_not_limited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(105):
+                (root / f"segment-{index:03d}.mp4").write_bytes(b"video")
+
+            self.assertEqual(105, len(scan_recordings(root, limit=None)))
 
 
 if __name__ == "__main__":

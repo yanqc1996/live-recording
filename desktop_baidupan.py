@@ -287,6 +287,29 @@ class BaiduPanUploadManager:
         self._ensure_worker()
         return item
 
+    def enqueue_archive(self, groups: list[dict]) -> dict:
+        config = self.load_config()
+        if not config.get("enabled"):
+            raise RuntimeError("请先启用百度网盘上传并完成授权")
+        added = 0
+        existing = 0
+        for group in groups:
+            anchor = str(group.get("anchor") or "历史录像")
+            for file_item in group.get("files") or []:
+                before = len(self._load_queue())
+                self.enqueue_recording(
+                    str(file_item.get("path") or ""),
+                    record_name=anchor,
+                    save_type=Path(str(file_item.get("path") or "")).suffix.lstrip(".").upper(),
+                    source="archive",
+                )
+                after = len(self._load_queue())
+                if after > before:
+                    added += 1
+                else:
+                    existing += 1
+        return {"added": added, "existing": existing, "groups": len(groups), "status": self.status()}
+
     def retry(self, item_id: str) -> dict:
         with self._lock:
             queue = self._load_queue()
@@ -306,6 +329,8 @@ class BaiduPanUploadManager:
 
     def _ensure_worker(self) -> None:
         with self._lock:
+            if not self.load_config().get("enabled"):
+                return
             if self._worker and self._worker.is_alive():
                 return
             self._worker = threading.Thread(target=self._worker_loop, daemon=True)
