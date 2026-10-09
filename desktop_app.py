@@ -379,6 +379,8 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/anchors/check-live":
                     self._json(state.check_anchors_live_status())
                 elif len(parts) == 3 and parts[:2] == ["api", "rooms"]:
+                    if state.recorder.is_running:
+                        raise RuntimeError("录制期间不可启用或暂停直播间，请先停止并保存")
                     state.rooms.set_active(int(parts[2]), bool(body.get("active")))
                     self._json({"rooms": state.rooms.list()})
                 elif path == "/api/settings":
@@ -482,6 +484,8 @@ def make_handler(state: AppState, token: str):
             _, parts = self._route()
             try:
                 if len(parts) == 3 and parts[:2] == ["api", "rooms"]:
+                    if state.recorder.is_running:
+                        raise RuntimeError("录制期间不可删除直播间，请先停止并保存")
                     state.rooms.delete(int(parts[2]))
                     self._json({"rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
