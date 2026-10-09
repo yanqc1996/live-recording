@@ -65,6 +65,18 @@ class RecorderProcessTest(unittest.TestCase):
         self.assertEqual([f"line {index}" for index in range(1200, 1205)], snapshot["lines"])
         self.assertEqual(1205, snapshot["cursor"])
 
+    def test_room_recording_state_is_derived_from_recorder_output(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder._append_log("主播甲 准备开始录制视频: /tmp/主播甲_001.ts")
+        active = recorder.status()["room_states"]["主播甲"]
+        self.assertEqual("recording", active["state"])
+        self.assertEqual("/tmp/主播甲_001.ts", active["path"])
+
+        recorder._append_log("主播甲 2026-10-09 14:00:00 直播录制完成")
+        completed = recorder.status()["room_states"]["主播甲"]
+        self.assertEqual("waiting", completed["state"])
+        self.assertIn("completed_at", completed)
+
 
 if __name__ == "__main__":
     unittest.main()

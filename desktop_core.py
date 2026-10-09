@@ -244,6 +244,7 @@ class RecorderProcess:
         self.logs: deque[str] = deque(maxlen=1200)
         self._log_offset = 0
         self._douyin_cookie = ""
+        self._room_states: dict[str, dict] = {}
         self._lock = threading.RLock()
 
     def set_douyin_cookie(self, cookie: str) -> None:
@@ -258,11 +259,51 @@ class RecorderProcess:
     def _append_log(self, line: str) -> None:
         line = line.rstrip()
         if line:
+            self._track_room_state(line)
             if self.logs.maxlen and len(self.logs) == self.logs.maxlen:
                 self._log_offset += 1
             self.logs.append(line)
             if self.on_log:
                 self.on_log(line)
+
+    def _track_room_state(self, line: str) -> None:
+        started = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
+        if started:
+            name = started.group("name").strip()
+            self._room_states[name] = {
+                "name": name,
+                "state": "recording",
+                "started_at": time.time(),
+                "path": started.group("path").strip(),
+                "updated_at": time.time(),
+            }
+            return
+        completed = re.search(
+            r"(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成",
+            line.strip(),
+        )
+        if completed:
+            name = completed.group("name").strip()
+            previous = self._room_states.get(name, {})
+            self._room_states[name] = {
+                **previous,
+                "name": name,
+                "state": "waiting",
+                "completed_at": time.time(),
+                "updated_at": time.time(),
+            }
+            return
+        live = re.search(r"(?P<name>.+?)\s+正在直播中", line.strip())
+        if live:
+            name = live.group("name").strip()
+            previous = self._room_states.get(name, {})
+            if previous.get("state") != "recording":
+                self._room_states[name] = {
+                    **previous,
+                    "name": name,
+                    "state": "live",
+                    "updated_at": time.time(),
+                }
 
     def preflight(self) -> list[str]:
         missing = []
@@ -276,6 +317,7 @@ class RecorderProcess:
         with self._lock:
             if self.is_running:
                 raise RuntimeError("录制服务已经在运行")
+            self._room_states.clear()
             missing = self.preflight()
             if missing:
                 raise RuntimeError("缺少运行依赖：" + "、".join(missing))
@@ -314,6 +356,8 @@ class RecorderProcess:
         for line in process.stdout:
             self._append_log(line)
         code = process.wait()
+        for state in self._room_states.values():
+            state.update({"state": "stopped", "updated_at": time.time()})
         self._append_log(f"桌面控制台：录制服务已退出（代码 {code}）")
 
     def stop(self) -> None:
@@ -346,6 +390,7 @@ class RecorderProcess:
             "pid": self.process.pid if self.is_running and self.process else None,
             "started_at": self.started_at if self.is_running else None,
             "missing_dependencies": self.preflight(),
+            "room_states": {name: dict(value) for name, value in self._room_states.items()},
         }
 
     def log_snapshot(self, after: int = 0) -> dict:
