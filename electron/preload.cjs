@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('liveRecorderDesktop', {
   getDouyinStatus: () => ipcRenderer.invoke('douyin:status'),
   refreshDouyinSecurity: (roomUrl) => ipcRenderer.invoke('douyin:refresh-security', roomUrl),
   chooseOutputDirectory: () => ipcRenderer.invoke('dialog:output-directory'),
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   setCompactMode: (enabled) => ipcRenderer.invoke('window:compact-mode', Boolean(enabled)),
   onDouyinStatusChanged: (callback) => {
     const handler = (_event, status) => callback(status);

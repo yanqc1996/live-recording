@@ -388,6 +388,10 @@ def make_handler(state: AppState, token: str):
                     self._json({"baidupan": state.uploads.save_config(body), "status": state.uploads.status()})
                 elif path == "/api/baidupan/check":
                     self._json({"check": state.uploads.check_auth(), "baidupan": state.uploads.status()})
+                elif path == "/api/baidupan/auth/start":
+                    self._json({"auth": state.uploads.start_auth(), "baidupan": state.uploads.status()})
+                elif path == "/api/baidupan/auth/submit":
+                    self._json({"auth": state.uploads.submit_auth_code(str(body.get("code", ""))), "baidupan": state.uploads.status()})
                 elif path == "/api/baidupan/enqueue":
                     item = state.uploads.enqueue_recording(
                         str(body.get("save_file_path", "")),

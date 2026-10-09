@@ -75,6 +75,8 @@ class BaiduPanUploadManager:
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
+        self._auth_process: subprocess.Popen | None = None
+        self._auth_state = {"status": "idle", "authorization_url": "", "message": "尚未授权", "output": ""}
 
     def _append_log(self, line: str) -> None:
         line = line.rstrip()
@@ -150,7 +152,68 @@ class BaiduPanUploadManager:
             "queue": sorted(queue, key=lambda item: item.get("created_at", 0), reverse=True)[:80],
             "running": bool(self._worker and self._worker.is_alive()),
             "pending": len([item for item in queue if item.get("status") in {"pending", "uploading"}]),
+            "auth": dict(self._auth_state),
         }
+
+    def start_auth(self) -> dict:
+        with self._lock:
+            if self._auth_process and self._auth_process.poll() is None:
+                return dict(self._auth_state)
+            config = self.load_config()
+            self._auth_state = {"status": "starting", "authorization_url": "", "message": "正在准备百度授权…", "output": ""}
+            self._auth_process = subprocess.Popen(
+                [*bypy_command(config["bypy_bin"]), "info"],
+                cwd=self.project_root,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                bufsize=1,
+            )
+            threading.Thread(target=self._read_auth_process, daemon=True).start()
+            return dict(self._auth_state)
+
+    def _read_auth_process(self) -> None:
+        process = self._auth_process
+        if not process or not process.stdout:
+            return
+        lines: deque[str] = deque(maxlen=80)
+        for raw_line in process.stdout:
+            line = raw_line.rstrip()
+            if not line:
+                continue
+            lines.append(line)
+            url_match = re.search(r"https?://\S+", line)
+            with self._lock:
+                if url_match:
+                    self._auth_state.update({
+                        "status": "waiting_code",
+                        "authorization_url": url_match.group(0).rstrip(".,;"),
+                        "message": "请在浏览器授权后粘贴授权码",
+                    })
+                self._auth_state["output"] = "\n".join(lines)[-6000:]
+        return_code = process.wait()
+        with self._lock:
+            self._auth_state.update({
+                "status": "authorized" if return_code == 0 else "failed",
+                "message": "百度网盘授权成功" if return_code == 0 else "授权失败，请重新尝试",
+                "output": "\n".join(lines)[-6000:],
+            })
+            self._auth_process = None
+
+    def submit_auth_code(self, code: str) -> dict:
+        code = str(code or "").strip()
+        if len(code) < 16:
+            raise ValueError("请输入百度授权页面返回的完整授权码")
+        with self._lock:
+            process = self._auth_process
+            if not process or process.poll() is not None or not process.stdin:
+                raise RuntimeError("当前没有等待授权的任务，请先点击开始授权")
+            process.stdin.write(code + "\n")
+            process.stdin.flush()
+            self._auth_state.update({"status": "authorizing", "message": "正在完成授权…"})
+            return dict(self._auth_state)
 
     def script_path(self) -> Path:
         bundled = self.bundle_root / "scripts" / "upload_to_baidu_netdisk.py"

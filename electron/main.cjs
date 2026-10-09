@@ -433,6 +433,13 @@ function registerIpc() {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0];
   });
+  ipcMain.handle('shell:open-external', async (event, rawUrl) => {
+    validateMainSender(event);
+    const url = new URL(String(rawUrl || ''));
+    if (url.protocol !== 'https:') throw new Error('只允许打开 HTTPS 链接');
+    await shell.openExternal(url.toString());
+    return { ok: true };
+  });
   ipcMain.handle('window:compact-mode', (event, enabled) => {
     validateMainSender(event);
     if (!mainWindow) throw new Error('主窗口尚未就绪');
