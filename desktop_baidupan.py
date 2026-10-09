@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "cleanup_below_free_gb": 50,
     "wait_timeout": 900,
     "retries": 3,
-    "max_concurrent_uploads": 2,
+    "max_concurrent_uploads": 3,
     "bypy_bin": "__python_module_bypy__",
 }
 
@@ -127,7 +127,7 @@ class BaiduPanUploadManager:
                 config[key] = DEFAULT_CONFIG[key]
         config["wait_timeout"] = max(10, min(config["wait_timeout"], 24 * 3600))
         config["retries"] = max(1, min(config["retries"], 10))
-        config["max_concurrent_uploads"] = max(1, min(config["max_concurrent_uploads"], 3))
+        config["max_concurrent_uploads"] = max(1, min(config["max_concurrent_uploads"], 5))
         config["keep_local_days"] = max(0, min(config["keep_local_days"], 3650))
         config["cleanup_below_free_gb"] = max(0, min(config["cleanup_below_free_gb"], 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()
@@ -144,7 +144,7 @@ class BaiduPanUploadManager:
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["wait_timeout"] = max(10, min(int(config.get("wait_timeout") or 900), 24 * 3600))
         config["retries"] = max(1, min(int(config.get("retries") or 3), 10))
-        config["max_concurrent_uploads"] = max(1, min(int(config.get("max_concurrent_uploads") or 2), 3))
+        config["max_concurrent_uploads"] = max(1, min(int(config.get("max_concurrent_uploads") or 3), 5))
         config["keep_local_days"] = max(0, min(int(config.get("keep_local_days") or 0), 3650))
         config["cleanup_below_free_gb"] = max(0, min(int(config.get("cleanup_below_free_gb") or 0), 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()

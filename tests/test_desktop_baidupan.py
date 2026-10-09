@@ -7,6 +7,15 @@ from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_concurrency_defaults_to_three_and_is_capped_at_five(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = BaiduPanUploadManager(root, root)
+
+            self.assertEqual(manager.load_config()["max_concurrent_uploads"], 3)
+            saved = manager.save_config({"max_concurrent_uploads": 20})
+            self.assertEqual(saved["max_concurrent_uploads"], 5)
+
     def test_claims_only_configured_number_of_pending_uploads(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
