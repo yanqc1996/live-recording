@@ -35,15 +35,22 @@ function loadWindowState() {
   }
 }
 
+function saveWindowState(patch) {
+  const temporary = `${windowStatePath()}.tmp`;
+  const next = { ...loadWindowState(), ...patch };
+  fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
+  fs.writeFileSync(temporary, JSON.stringify(next), 'utf8');
+  fs.renameSync(temporary, windowStatePath());
+  return next;
+}
+
 function saveCompactWindowPosition() {
   if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
   clearTimeout(windowStateTimer);
   windowStateTimer = setTimeout(() => {
     if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
     const { x, y } = mainWindow.getBounds();
-    const temporary = `${windowStatePath()}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify({ compact: { x, y } }), 'utf8');
-    fs.renameSync(temporary, windowStatePath());
+    saveWindowState({ compact: { x, y } });
   }, 250);
 }
 
@@ -459,6 +466,23 @@ function createMainWindow() {
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.on('move', saveCompactWindowPosition);
+  mainWindow.on('close', (event) => {
+    if (process.platform !== 'darwin' || quitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+    const windowState = loadWindowState();
+    if (windowState.backgroundCloseHintShown) return;
+    saveWindowState({ backgroundCloseHintShown: true });
+    dialog.showMessageBox({
+      type: 'info',
+      title: '播录助手已在后台运行',
+      message: '窗口已隐藏，当前任务不会中断',
+      detail: '录制、直播音频和弹幕监听会继续运行。点击 Dock 中的播录助手可重新打开；如需完全退出，请按 ⌘Q。',
+      buttons: ['知道了'],
+      defaultId: 0,
+      noLink: true
+    }).catch((error) => console.error(error));
+  });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url !== backendUrl) event.preventDefault();
   });
@@ -483,7 +507,10 @@ else {
       dialog.showErrorBox('播录助手启动失败', error.message);
       app.quit();
     }
-    app.on('activate', () => { if (!mainWindow) createMainWindow(); });
+    app.on('activate', () => {
+      if (!mainWindow) createMainWindow();
+      else { mainWindow.show(); mainWindow.focus(); }
+    });
   });
 }
 
