@@ -173,6 +173,18 @@ def upload_file(
     raise SystemExit(1)
 
 
+def verify_remote_file(cli: str, local_file: Path, remote_dir: str, retries: int) -> None:
+    remote_path = f"{remote_dir.rstrip('/')}/{local_file.name}"
+    for attempt in range(1, retries + 1):
+        result = run_command([*cli_command(cli), "meta", remote_path])
+        if result.returncode == 0:
+            print(f"[baidupan] verified remote file: {remote_path}")
+            return
+        print(f"[baidupan] remote verification failed ({attempt}/{retries}): {remote_path}")
+        time.sleep(min(attempt * 2, 8))
+    raise SystemExit(1)
+
+
 def delete_local_file(local_file: Path) -> None:
     try:
         local_file.unlink()
@@ -243,6 +255,7 @@ def main() -> int:
             slice_size=args.bypy_slice_size,
             verbose=args.bypy_verbose,
         )
+        verify_remote_file(args.bypy_bin, file_path, args.remote_dir, args.retries)
         if args.delete_after_upload:
             delete_local_file(file_path)
 

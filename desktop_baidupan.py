@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+import shutil
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,8 @@ DEFAULT_CONFIG = {
     "remote_dir": "/apps/LiveRecorder",
     "group_by_anchor": True,
     "delete_after_upload": False,
+    "keep_local_days": 3,
+    "cleanup_below_free_gb": 50,
     "wait_timeout": 900,
     "retries": 3,
     "bypy_bin": "__python_module_bypy__",
@@ -111,8 +114,15 @@ class BaiduPanUploadManager:
                 config[key] = int(config.get(key) or DEFAULT_CONFIG[key])
             except (TypeError, ValueError):
                 config[key] = DEFAULT_CONFIG[key]
+        for key in ("keep_local_days", "cleanup_below_free_gb"):
+            try:
+                config[key] = int(config.get(key, DEFAULT_CONFIG[key]))
+            except (TypeError, ValueError):
+                config[key] = DEFAULT_CONFIG[key]
         config["wait_timeout"] = max(10, min(config["wait_timeout"], 24 * 3600))
         config["retries"] = max(1, min(config["retries"], 10))
+        config["keep_local_days"] = max(0, min(config["keep_local_days"], 3650))
+        config["cleanup_below_free_gb"] = max(0, min(config["cleanup_below_free_gb"], 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()
         return config
 
@@ -126,6 +136,8 @@ class BaiduPanUploadManager:
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["wait_timeout"] = max(10, min(int(config.get("wait_timeout") or 900), 24 * 3600))
         config["retries"] = max(1, min(int(config.get("retries") or 3), 10))
+        config["keep_local_days"] = max(0, min(int(config.get("keep_local_days") or 0), 3650))
+        config["cleanup_below_free_gb"] = max(0, min(int(config.get("cleanup_below_free_gb") or 0), 10000))
         config["bypy_bin"] = str(config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"]).strip()
         with self._lock:
             _atomic_json(self.config_path, config)
@@ -145,6 +157,7 @@ class BaiduPanUploadManager:
         _atomic_json(self.queue_path, queue)
 
     def status(self) -> dict:
+        self._cleanup_uploaded_files()
         with self._lock:
             queue = self._load_queue()
         return {
@@ -268,9 +281,13 @@ class BaiduPanUploadManager:
             "delete_after_upload": bool(config.get("delete_after_upload")),
             "wait_timeout": int(config.get("wait_timeout") or 900),
             "retries": int(config.get("retries") or 3),
+            "keep_local_days": int(config.get("keep_local_days") or 0),
+            "cleanup_below_free_gb": int(config.get("cleanup_below_free_gb") or 0),
             "bypy_bin": config.get("bypy_bin") or DEFAULT_CONFIG["bypy_bin"],
             "attempts": 0,
             "error": "",
+            "remote_verified": False,
+            "local_deleted": False,
         }
         with self._lock:
             queue = self._load_queue()
@@ -376,8 +393,6 @@ class BaiduPanUploadManager:
             "--converts_to_mp4",
             str(bool(item.get("converts_to_mp4"))),
         ])
-        if item.get("delete_after_upload"):
-            cmd.append("--delete-after-upload")
         self._append_log(f"开始上传：{item.get('save_file_path')}")
         try:
             process = subprocess.Popen(
@@ -396,8 +411,9 @@ class BaiduPanUploadManager:
                 self._append_log(line)
             return_code = process.wait()
             if return_code == 0:
-                self._finish_item(item["id"], "success", "")
+                self._finish_item(item["id"], "success", "", remote_verified=True)
                 self._append_log(f"上传完成：{item.get('save_file_path')}")
+                self._cleanup_uploaded_files()
             else:
                 self._finish_item(item["id"], "failed", "\n".join(tail)[-2000:] or f"退出码 {return_code}")
                 self._append_log(f"上传失败：{item.get('save_file_path')}")
@@ -405,7 +421,7 @@ class BaiduPanUploadManager:
             self._finish_item(item["id"], "failed", str(exc))
             self._append_log(f"上传异常：{exc}")
 
-    def _finish_item(self, item_id: str, status: str, error: str) -> None:
+    def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False) -> None:
         with self._lock:
             queue = self._load_queue()
             for item in queue:
@@ -413,5 +429,39 @@ class BaiduPanUploadManager:
                     item["status"] = status
                     item["error"] = error
                     item["updated_at"] = int(time.time())
+                    item["remote_verified"] = bool(remote_verified)
                     break
             self._save_queue(queue)
+
+    def _cleanup_uploaded_files(self) -> None:
+        with self._lock:
+            queue = self._load_queue()
+            changed = False
+            now = time.time()
+            for item in queue:
+                if not (item.get("status") == "success" and item.get("remote_verified") and item.get("delete_after_upload")):
+                    continue
+                if item.get("local_deleted"):
+                    continue
+                path = Path(str(item.get("save_file_path") or ""))
+                if not path.exists() or not path.is_file():
+                    item["local_deleted"] = True
+                    changed = True
+                    continue
+                keep_seconds = int(item.get("keep_local_days") or 0) * 86400
+                if keep_seconds and now - path.stat().st_mtime < keep_seconds:
+                    continue
+                threshold = int(item.get("cleanup_below_free_gb") or 0) * 1024 ** 3
+                if threshold and shutil.disk_usage(path.parent).free >= threshold:
+                    continue
+                try:
+                    path.unlink()
+                    item["local_deleted"] = True
+                    item["deleted_at"] = int(now)
+                    changed = True
+                    self._append_log(f"远端已确认，已清理本地文件：{path}")
+                except OSError as exc:
+                    item["cleanup_error"] = str(exc)
+                    changed = True
+            if changed:
+                self._save_queue(queue)
