@@ -49,24 +49,22 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
     status = json_data.get("status", 4)
 
     if status == 2:
-        stream_url = json_data['stream_url']
-        flv_url_dict = stream_url['flv_pull_url']
-        flv_url_list: list = list(flv_url_dict.values())
-        m3u8_url_dict = stream_url['hls_pull_url_map']
-        m3u8_url_list: list = list(m3u8_url_dict.values())
-
-        while len(flv_url_list) < 5:
-            flv_url_list.append(flv_url_list[-1])
-            m3u8_url_list.append(m3u8_url_list[-1])
+        stream_url = json_data.get('stream_url') or {}
+        flv_url_list = [url for url in (stream_url.get('flv_pull_url') or {}).values() if url]
+        m3u8_url_list = [url for url in (stream_url.get('hls_pull_url_map') or {}).values() if url]
+        if stream_url.get('hls_pull_url'):
+            m3u8_url_list.append(stream_url['hls_pull_url'])
+        if not flv_url_list and not m3u8_url_list:
+            return result
 
         video_quality, quality_index = get_quality_index(video_quality)
-        m3u8_url = m3u8_url_list[quality_index]
-        flv_url = flv_url_list[quality_index]
-        ok = await get_response_status(url=m3u8_url, proxy_addr=proxy_addr)
-        if not ok:
-            index = quality_index + 1 if quality_index < 4 else quality_index - 1
-            m3u8_url = m3u8_url_list[index]
-            flv_url = flv_url_list[index]
+        flv_url = flv_url_list[min(quality_index, len(flv_url_list) - 1)] if flv_url_list else ''
+        m3u8_url = m3u8_url_list[min(quality_index, len(m3u8_url_list) - 1)] if m3u8_url_list else ''
+        if m3u8_url and not await get_response_status(url=m3u8_url, proxy_addr=proxy_addr):
+            fallback_index = min(quality_index + 1, len(m3u8_url_list) - 1)
+            m3u8_url = m3u8_url_list[fallback_index]
+            if flv_url_list:
+                flv_url = flv_url_list[min(fallback_index, len(flv_url_list) - 1)]
         result |= {
             'is_live': True,
             'title': json_data['title'],

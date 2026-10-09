@@ -113,26 +113,24 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     "The live streaming type or gameplay is not supported on the computer side yet, please use the "
                     "app to share the link for recording."
                 )
-            live_core_sdk_data = room_data['stream_url']['live_core_sdk_data']
-            pull_datas = room_data['stream_url']['pull_datas']
+            live_core_sdk_data = room_data['stream_url'].get('live_core_sdk_data') or {}
+            pull_datas = room_data['stream_url'].get('pull_datas') or {}
             if live_core_sdk_data:
                 if pull_datas:
                     key = list(pull_datas.keys())[0]
-                    json_str = pull_datas[key]['stream_data']
+                    json_str = pull_datas[key].get('stream_data')
                 else:
-                    json_str = live_core_sdk_data['pull_data']['stream_data']
-                json_data = json.loads(json_str)
-                if 'origin' in json_data['data']:
-                    stream_data = live_core_sdk_data['pull_data']['stream_data']
-                    origin_data = json.loads(stream_data)['data']['origin']['main']
-                    sdk_params = json.loads(origin_data['sdk_params'])
+                    json_str = (live_core_sdk_data.get('pull_data') or {}).get('stream_data')
+                json_data = json.loads(json_str) if json_str else {}
+                origin_url_list = ((json_data.get('data') or {}).get('origin') or {}).get('main') or {}
+                if origin_url_list:
+                    sdk_params = json.loads(origin_url_list.get('sdk_params') or '{}')
                     origin_hls_codec = sdk_params.get('VCodec') or ''
-
-                    origin_url_list = json_data['data']['origin']['main']
-                    origin_m3u8 = {'ORIGIN': origin_url_list["hls"] + '&codec=' + origin_hls_codec}
-                    origin_flv = {'ORIGIN': origin_url_list["flv"] + '&codec=' + origin_hls_codec}
-                    hls_pull_url_map = room_data['stream_url']['hls_pull_url_map']
-                    flv_pull_url = room_data['stream_url']['flv_pull_url']
+                    suffix = '&codec=' + origin_hls_codec if origin_hls_codec else ''
+                    origin_m3u8 = {'ORIGIN': origin_url_list['hls'] + suffix} if origin_url_list.get('hls') else {}
+                    origin_flv = {'ORIGIN': origin_url_list['flv'] + suffix} if origin_url_list.get('flv') else {}
+                    hls_pull_url_map = room_data['stream_url'].get('hls_pull_url_map') or {}
+                    flv_pull_url = room_data['stream_url'].get('flv_pull_url') or {}
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
@@ -198,26 +196,24 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
                     "The live streaming type or gameplay is not supported on the computer side yet, please use the "
                     "app to share the link for recording."
                 )
-            live_core_sdk_data = room_data['stream_url']['live_core_sdk_data']
-            pull_datas = room_data['stream_url']['pull_datas']
+            live_core_sdk_data = room_data['stream_url'].get('live_core_sdk_data') or {}
+            pull_datas = room_data['stream_url'].get('pull_datas') or {}
             if live_core_sdk_data:
                 if pull_datas:
                     key = list(pull_datas.keys())[0]
-                    json_str = pull_datas[key]['stream_data']
+                    json_str = pull_datas[key].get('stream_data')
                 else:
-                    json_str = live_core_sdk_data['pull_data']['stream_data']
-                json_data = json.loads(json_str)
-                if 'origin' in json_data['data']:
-                    stream_data = live_core_sdk_data['pull_data']['stream_data']
-                    origin_data = json.loads(stream_data)['data']['origin']['main']
-                    sdk_params = json.loads(origin_data['sdk_params'])
+                    json_str = (live_core_sdk_data.get('pull_data') or {}).get('stream_data')
+                json_data = json.loads(json_str) if json_str else {}
+                origin_url_list = ((json_data.get('data') or {}).get('origin') or {}).get('main') or {}
+                if origin_url_list:
+                    sdk_params = json.loads(origin_url_list.get('sdk_params') or '{}')
                     origin_hls_codec = sdk_params.get('VCodec') or ''
-
-                    origin_url_list = json_data['data']['origin']['main']
-                    origin_m3u8 = {'ORIGIN': origin_url_list["hls"] + '&codec=' + origin_hls_codec}
-                    origin_flv = {'ORIGIN': origin_url_list["flv"] + '&codec=' + origin_hls_codec}
-                    hls_pull_url_map = room_data['stream_url']['hls_pull_url_map']
-                    flv_pull_url = room_data['stream_url']['flv_pull_url']
+                    suffix = '&codec=' + origin_hls_codec if origin_hls_codec else ''
+                    origin_m3u8 = {'ORIGIN': origin_url_list['hls'] + suffix} if origin_url_list.get('hls') else {}
+                    origin_flv = {'ORIGIN': origin_url_list['flv'] + suffix} if origin_url_list.get('flv') else {}
+                    hls_pull_url_map = room_data['stream_url'].get('hls_pull_url_map') or {}
+                    flv_pull_url = room_data['stream_url'].get('flv_pull_url') or {}
                     room_data['stream_url']['hls_pull_url_map'] = {**origin_m3u8, **hls_pull_url_map}
                     room_data['stream_url']['flv_pull_url'] = {**origin_flv, **flv_pull_url}
     except Exception as e:
