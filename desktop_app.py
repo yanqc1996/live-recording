@@ -395,6 +395,8 @@ def make_handler(state: AppState, token: str):
                     self._json({"auth": state.uploads.start_auth(), "baidupan": state.uploads.status()})
                 elif path == "/api/baidupan/auth/submit":
                     self._json({"auth": state.uploads.submit_auth_code(str(body.get("code", ""))), "baidupan": state.uploads.status()})
+                elif path == "/api/baidupan/pause":
+                    self._json({"baidupan": state.uploads.set_paused(bool(body.get("paused")))})
                 elif path == "/api/baidupan/enqueue":
                     item = state.uploads.enqueue_recording(
                         str(body.get("save_file_path", "")),

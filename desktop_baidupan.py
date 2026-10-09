@@ -22,6 +22,7 @@ VIDEO_EXTENSIONS = {".ts", ".mp4", ".mkv", ".flv", ".mp3", ".m4a"}
 DEFAULT_CONFIG = {
     "enabled": False,
     "auto_upload": False,
+    "paused": False,
     "remote_dir": "/apps/LiveRecorder",
     "group_by_anchor": True,
     "delete_after_upload": False,
@@ -80,6 +81,8 @@ class BaiduPanUploadManager:
         self._stop = threading.Event()
         self._auth_process: subprocess.Popen | None = None
         self._auth_state = {"status": "idle", "authorization_url": "", "message": "尚未授权", "output": ""}
+        self._progress = {"item_id": "", "file": "", "percent": 0}
+        self._ensure_worker()
 
     def _append_log(self, line: str) -> None:
         line = line.rstrip()
@@ -106,6 +109,7 @@ class BaiduPanUploadManager:
         config = {**DEFAULT_CONFIG, **(data if isinstance(data, dict) else {})}
         config["enabled"] = bool(config.get("enabled"))
         config["auto_upload"] = bool(config.get("auto_upload"))
+        config["paused"] = bool(config.get("paused"))
         config["group_by_anchor"] = bool(config.get("group_by_anchor"))
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["remote_dir"] = _normalize_remote_dir(config.get("remote_dir", ""))
@@ -132,6 +136,7 @@ class BaiduPanUploadManager:
         config["remote_dir"] = _normalize_remote_dir(config.get("remote_dir", ""))
         config["enabled"] = bool(config.get("enabled"))
         config["auto_upload"] = bool(config.get("auto_upload"))
+        config["paused"] = bool(config.get("paused"))
         config["group_by_anchor"] = bool(config.get("group_by_anchor"))
         config["delete_after_upload"] = bool(config.get("delete_after_upload"))
         config["wait_timeout"] = max(10, min(int(config.get("wait_timeout") or 900), 24 * 3600))
@@ -166,7 +171,18 @@ class BaiduPanUploadManager:
             "running": bool(self._worker and self._worker.is_alive()),
             "pending": len([item for item in queue if item.get("status") in {"pending", "uploading"}]),
             "auth": dict(self._auth_state),
+            "paused": bool(self.load_config().get("paused")),
+            "pending_bytes": sum(int(item.get("file_size") or 0) for item in queue if item.get("status") in {"pending", "uploading"}),
+            "progress": dict(self._progress),
         }
+
+    def set_paused(self, paused: bool) -> dict:
+        config = self.load_config()
+        config["paused"] = bool(paused)
+        self.save_config(config)
+        if not paused:
+            self._ensure_worker()
+        return self.status()
 
     def start_auth(self) -> dict:
         with self._lock:
@@ -288,6 +304,7 @@ class BaiduPanUploadManager:
             "error": "",
             "remote_verified": False,
             "local_deleted": False,
+            "file_size": path.stat().st_size if path.exists() and path.is_file() else 0,
         }
         with self._lock:
             queue = self._load_queue()
@@ -355,6 +372,8 @@ class BaiduPanUploadManager:
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
+            if self.load_config().get("paused"):
+                return
             item = None
             with self._lock:
                 queue = self._load_queue()
@@ -394,6 +413,7 @@ class BaiduPanUploadManager:
             str(bool(item.get("converts_to_mp4"))),
         ])
         self._append_log(f"开始上传：{item.get('save_file_path')}")
+        self._progress = {"item_id": item["id"], "file": Path(item["save_file_path"]).name, "percent": 0}
         try:
             process = subprocess.Popen(
                 cmd,
@@ -409,6 +429,9 @@ class BaiduPanUploadManager:
             for line in process.stdout:
                 tail.append(line.rstrip())
                 self._append_log(line)
+                percent = re.search(r"(?<!\d)(100|\d{1,2})(?:\.\d+)?%", line)
+                if percent:
+                    self._progress["percent"] = int(percent.group(1))
             return_code = process.wait()
             if return_code == 0:
                 self._finish_item(item["id"], "success", "", remote_verified=True)
@@ -420,6 +443,8 @@ class BaiduPanUploadManager:
         except Exception as exc:
             self._finish_item(item["id"], "failed", str(exc))
             self._append_log(f"上传异常：{exc}")
+        finally:
+            self._progress = {"item_id": "", "file": "", "percent": 0}
 
     def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False) -> None:
         with self._lock:
