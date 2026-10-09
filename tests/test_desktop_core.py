@@ -65,6 +65,17 @@ class RecorderProcessTest(unittest.TestCase):
         self.assertEqual([f"line {index}" for index in range(1200, 1205)], snapshot["lines"])
         self.assertEqual(1205, snapshot["cursor"])
 
+    def test_key_log_view_filters_repetitive_engine_output(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder._append_log("检测直播间中...")
+        recorder._append_log("主播甲 准备开始录制视频: /tmp/test.ts")
+        recorder._append_log("普通调试输出")
+
+        snapshot = recorder.log_snapshot(0, important_only=True)
+
+        self.assertEqual(["主播甲 准备开始录制视频: /tmp/test.ts"], snapshot["lines"])
+        self.assertEqual(3, snapshot["cursor"])
+
     def test_room_recording_state_is_derived_from_recorder_output(self):
         recorder = RecorderProcess(Path.cwd())
         recorder._append_log("主播甲 准备开始录制视频: /tmp/主播甲_001.ts")

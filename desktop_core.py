@@ -393,7 +393,18 @@ class RecorderProcess:
             "room_states": {name: dict(value) for name, value in self._room_states.items()},
         }
 
-    def log_snapshot(self, after: int = 0) -> dict:
+    @staticmethod
+    def _is_key_log(line: str) -> bool:
+        markers = (
+            "桌面控制台：", "准备开始录制", "直播录制完成", "正在直播中",
+            "错误", "失败", "异常", "Error", "Traceback",
+        )
+        return any(marker in line for marker in markers)
+
+    def log_snapshot(self, after: int = 0, important_only: bool = False) -> dict:
         lines = list(self.logs)
         start = max(0, min(after - self._log_offset, len(lines)))
-        return {"lines": lines[start:], "cursor": self._log_offset + len(lines)}
+        selected = lines[start:]
+        if important_only:
+            selected = [line for line in selected if self._is_key_log(line)]
+        return {"lines": selected, "cursor": self._log_offset + len(lines)}

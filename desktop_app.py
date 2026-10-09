@@ -268,8 +268,10 @@ def make_handler(state: AppState, token: str):
                         "recording_groups": group_recordings(recordings),
                     })
                 elif path == "/api/logs":
-                    cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
-                    self._json(state.recorder.log_snapshot(cursor))
+                    query = parse_qs(urlparse(self.path).query)
+                    cursor = int(query.get("cursor", ["0"])[0])
+                    detailed = query.get("detail", ["0"])[0] == "1"
+                    self._json(state.recorder.log_snapshot(cursor, important_only=not detailed))
                 elif path == "/api/interaction/events":
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
                     self._json(state.interaction.events(cursor))
