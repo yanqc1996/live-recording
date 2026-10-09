@@ -19,6 +19,33 @@ let quitCheckInProgress = false;
 let syncTimer = null;
 let douyinSecurity = {};
 let normalWindowBounds = null;
+let compactMode = false;
+let windowStateTimer = null;
+
+function windowStatePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function loadWindowState() {
+  try {
+    const value = JSON.parse(fs.readFileSync(windowStatePath(), 'utf8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCompactWindowPosition() {
+  if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
+  clearTimeout(windowStateTimer);
+  windowStateTimer = setTimeout(() => {
+    if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
+    const { x, y } = mainWindow.getBounds();
+    const temporary = `${windowStatePath()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ compact: { x, y } }), 'utf8');
+    fs.renameSync(temporary, windowStatePath());
+  }, 250);
+}
 
 function allowedDouyinUrl(rawUrl) {
   try {
@@ -392,15 +419,18 @@ function registerIpc() {
     const compact = Boolean(enabled);
     if (compact) {
       if (!normalWindowBounds) normalWindowBounds = mainWindow.getBounds();
+      const saved = loadWindowState().compact || {};
       mainWindow.setMinimumSize(390, 560);
       mainWindow.setAlwaysOnTop(true, 'floating');
       mainWindow.setBounds({
-        x: normalWindowBounds.x + Math.max(0, normalWindowBounds.width - 430),
-        y: normalWindowBounds.y,
+        x: Number.isFinite(saved.x) ? saved.x : normalWindowBounds.x + Math.max(0, normalWindowBounds.width - 430),
+        y: Number.isFinite(saved.y) ? saved.y : normalWindowBounds.y,
         width: 430,
         height: 720
       }, true);
+      compactMode = true;
     } else {
+      compactMode = false;
       mainWindow.setAlwaysOnTop(false);
       mainWindow.setMinimumSize(940, 680);
       if (normalWindowBounds) mainWindow.setBounds(normalWindowBounds, true);
@@ -428,6 +458,7 @@ function createMainWindow() {
     }
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.on('move', saveCompactWindowPosition);
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url !== backendUrl) event.preventDefault();
   });
