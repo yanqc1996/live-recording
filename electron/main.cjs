@@ -96,6 +96,18 @@ function packagedRuntime() {
   return path.join(process.resourcesPath, 'runtime', 'LiveRecorderRuntime', executable);
 }
 
+function buildCommit() {
+  const buildInfo = app.isPackaged
+    ? path.join(process.resourcesPath, 'build-info.json')
+    : path.join(sourceRoot(), 'build', 'generated', 'build-info.json');
+  try {
+    const value = JSON.parse(fs.readFileSync(buildInfo, 'utf8')).commit;
+    return String(value || '').slice(0, 12);
+  } catch {
+    return 'development';
+  }
+}
+
 function startBackend() {
   return new Promise((resolve, reject) => {
     const engineRoot = prepareEngineRoot();
@@ -110,7 +122,8 @@ function startBackend() {
       ...process.env,
       PYTHONUNBUFFERED: '1',
       LIVERECORDER_DATA_ROOT: engineRoot,
-      BOLU_APP_VERSION: app.getVersion()
+      BOLU_APP_VERSION: app.getVersion(),
+      BOLU_BUILD_COMMIT: buildCommit()
     };
     if (app.isPackaged) {
       environment.LIVERECORDER_ENGINE_EXECUTABLE = runtime;

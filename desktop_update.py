@@ -59,9 +59,10 @@ def compare_versions(left: str, right: str) -> int:
 
 
 class UpdateManager:
-    def __init__(self, path: Path, current_version: str):
+    def __init__(self, path: Path, current_version: str, build_commit: str = ""):
         self.path = path
         self.current_version = str(current_version or "0.0.0")
+        self.build_commit = str(build_commit or "").strip()[:12]
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -88,6 +89,7 @@ class UpdateManager:
         config = self._load()
         return {
             "current_version": self.current_version,
+            "build_commit": self.build_commit,
             "manifest_url": config.get("manifest_url", ""),
             "last_checked_at": config.get("last_checked_at", 0),
             "last_result": config.get("last_result") or {},

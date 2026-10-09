@@ -1,12 +1,13 @@
 {
   "name": "live-recorder-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "播录助手本地桌面应用",
   "main": "electron/main.cjs",
   "scripts": {
     "desktop": "electron .",
-    "desktop:runtime": "python3 scripts/build_desktop_runtime.py",
+    "desktop:build-info": "node scripts/write_build_info.cjs",
+    "desktop:runtime": "npm run desktop:build-info && python3 scripts/build_desktop_runtime.py",
     "desktop:pack": "npm run desktop:runtime && electron-builder --dir",
     "desktop:dist": "npm run desktop:runtime && electron-builder"
   },
@@ -34,6 +35,10 @@
       {
         "from": "packaging/config.default.ini",
         "to": "defaults/config.default.ini"
+      },
+      {
+        "from": "build/generated/build-info.json",
+        "to": "build-info.json"
       },
       {
         "from": "首次启动引导.txt",

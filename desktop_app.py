@@ -29,6 +29,7 @@ BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 PROJECT_ROOT = Path(os.environ.get("LIVERECORDER_DATA_ROOT", Path(__file__).resolve().parent)).resolve()
 STATIC_FILE = BUNDLE_ROOT / "desktop" / "index.html"
 APP_VERSION = os.environ.get("BOLU_APP_VERSION") or os.environ.get("npm_package_version") or "0.1.0"
+BUILD_COMMIT = os.environ.get("BOLU_BUILD_COMMIT", "").strip()
 
 
 class LazyDouyinInteraction:
@@ -108,7 +109,7 @@ class AppState:
         self.rooms = RoomStore(PROJECT_ROOT / "config" / "URL_config.ini")
         self.anchors = AnchorStore(PROJECT_ROOT / "config" / "anchors.json")
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
-        self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION)
+        self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION, BUILD_COMMIT)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._last_recording_candidate: dict | None = None
         self._recordings = RecentRecordingCache()
