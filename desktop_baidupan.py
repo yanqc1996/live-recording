@@ -80,6 +80,7 @@ class BaiduPanUploadManager:
         self._lock = threading.RLock()
         self._worker: threading.Thread | None = None
         self._active_workers: dict[str, threading.Thread] = {}
+        self._active_processes: dict[str, subprocess.Popen] = {}
         self._stop = threading.Event()
         self._auth_process: subprocess.Popen | None = None
         self._auth_state = {"status": "idle", "authorization_url": "", "message": "尚未授权", "output": ""}
@@ -363,6 +364,43 @@ class BaiduPanUploadManager:
         self._ensure_worker()
         return item
 
+    def pause_item(self, item_id: str) -> dict:
+        with self._lock:
+            queue = self._load_queue()
+            item = next((entry for entry in queue if entry.get("id") == item_id), None)
+            if not item:
+                raise IndexError("上传任务不存在")
+            if item.get("status") not in {"pending", "uploading"}:
+                raise RuntimeError("只有等待中或上传中的任务可以暂停")
+            item.update({"status": "paused", "updated_at": int(time.time())})
+            self._save_queue(queue)
+            process = self._active_processes.get(item_id)
+            if process and process.poll() is None:
+                process.terminate()
+        self._append_log(f"已暂停上传：{item.get('save_file_path')}")
+        return item
+
+    def cancel_item(self, item_id: str) -> dict:
+        with self._lock:
+            queue = self._load_queue()
+            item = next((entry for entry in queue if entry.get("id") == item_id), None)
+            if not item:
+                raise IndexError("上传任务不存在")
+            if item.get("status") not in {"pending", "uploading", "paused", "failed"}:
+                raise RuntimeError("当前任务不能取消")
+            item.update({"status": "cancelled", "updated_at": int(time.time()), "error": ""})
+            self._save_queue(queue)
+            process = self._active_processes.get(item_id)
+            if process and process.poll() is None:
+                process.terminate()
+        self._append_log(f"已取消上传：{item.get('save_file_path')}")
+        return item
+
+    def _queue_status(self, item_id: str) -> str:
+        with self._lock:
+            item = next((entry for entry in self._load_queue() if entry.get("id") == item_id), None)
+        return str(item.get("status") or "") if item else ""
+
     def clear_finished(self) -> dict:
         with self._lock:
             queue = [item for item in self._load_queue() if item.get("status") not in {"success", "failed", "cancelled"}]
@@ -446,7 +484,15 @@ class BaiduPanUploadManager:
         ])
         self._append_log(f"开始上传：{item.get('save_file_path')}")
         with self._lock:
-            self._progresses[item["id"]] = {"item_id": item["id"], "file": Path(item["save_file_path"]).name, "percent": 0}
+            self._progresses[item["id"]] = {
+                "item_id": item["id"],
+                "file": Path(item["save_file_path"]).name,
+                "percent": 0,
+                "stage": "正在准备",
+                "speed_bps": 0,
+                "eta_seconds": None,
+                "started_at": time.time(),
+            }
         try:
             process = subprocess.Popen(
                 cmd,
@@ -458,6 +504,10 @@ class BaiduPanUploadManager:
                 errors="replace",
                 bufsize=1,
             )
+            with self._lock:
+                self._active_processes[item["id"]] = process
+                if item["id"] in self._progresses:
+                    self._progresses[item["id"]]["stage"] = "正在上传"
             assert process.stdout is not None
             tail: deque[str] = deque(maxlen=20)
             for line in process.stdout:
@@ -467,8 +517,22 @@ class BaiduPanUploadManager:
                 if percent:
                     with self._lock:
                         if item["id"] in self._progresses:
-                            self._progresses[item["id"]]["percent"] = int(percent.group(1))
+                            progress = self._progresses[item["id"]]
+                            value = int(percent.group(1))
+                            elapsed = max(0.1, time.time() - float(progress.get("started_at") or time.time()))
+                            size = int(item.get("file_size") or 0)
+                            completed = size * value / 100
+                            speed = completed / elapsed if completed > 0 else 0
+                            progress.update({
+                                "percent": value,
+                                "stage": "正在确认远端文件" if value >= 100 else "正在上传",
+                                "speed_bps": int(speed),
+                                "eta_seconds": int((size - completed) / speed) if speed > 0 and value < 100 else 0 if value >= 100 else None,
+                            })
             return_code = process.wait()
+            current_status = self._queue_status(item["id"])
+            if current_status in {"paused", "cancelled"}:
+                return
             if return_code == 0:
                 self._finish_item(item["id"], "success", "", remote_verified=True)
                 self._append_log(f"上传完成：{item.get('save_file_path')}")
@@ -481,6 +545,7 @@ class BaiduPanUploadManager:
             self._append_log(f"上传异常：{exc}")
         finally:
             with self._lock:
+                self._active_processes.pop(item["id"], None)
                 self._progresses.pop(item["id"], None)
 
     def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False) -> None:

@@ -417,6 +417,12 @@ def make_handler(state: AppState, token: str):
                 elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "retry":
                     item = state.uploads.retry(parts[2])
                     self._json({"item": item, "baidupan": state.uploads.status()})
+                elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "pause":
+                    item = state.uploads.pause_item(parts[2])
+                    self._json({"item": item, "baidupan": state.uploads.status()})
+                elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "cancel":
+                    item = state.uploads.cancel_item(parts[2])
+                    self._json({"item": item, "baidupan": state.uploads.status()})
                 elif path == "/api/baidupan/clear-finished":
                     self._json({"baidupan": state.uploads.clear_finished()})
                 elif path == "/api/start":

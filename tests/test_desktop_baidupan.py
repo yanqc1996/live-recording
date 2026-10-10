@@ -75,6 +75,37 @@ class BaiduPanUploadManagerTest(unittest.TestCase):
 
             self.assertTrue(video.exists())
 
+    def test_pending_item_can_be_paused_resumed_and_cancelled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([{
+                "id": "item",
+                "status": "pending",
+                "save_file_path": str(root / "recording.mp4"),
+                "created_at": 1,
+            }])
+
+            manager.pause_item("item")
+            self.assertEqual(manager._load_queue()[0]["status"], "paused")
+            manager.retry("item")
+            self.assertEqual(manager._load_queue()[0]["status"], "pending")
+            manager.cancel_item("item")
+            self.assertEqual(manager._load_queue()[0]["status"], "cancelled")
+
+    def test_paused_item_is_not_claimed_by_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([
+                {"id": "paused", "status": "paused", "attempts": 0, "created_at": 1},
+                {"id": "ready", "status": "pending", "attempts": 0, "created_at": 2},
+            ])
+
+            claimed = manager._claim_pending_items(2)
+
+            self.assertEqual([item["id"] for item in claimed], ["ready"])
+
 
 if __name__ == "__main__":
     unittest.main()
