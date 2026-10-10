@@ -17,6 +17,31 @@ class AnchorStoreTest(unittest.TestCase):
             )
             self.assertEqual("https://live.douyin.com/example", anchor["live_url"])
 
+    def test_anchor_profile_can_be_edited_visually(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            anchor = store.add("旧名称", "https://www.douyin.com/user/old")
+
+            updated = store.update(anchor["id"], {
+                "name": " 新名称 ",
+                "profile_url": "https://www.douyin.com/user/new",
+                "live_url": "https://live.douyin.com/123?source=edit",
+                "default_quality": "高清",
+            })
+
+            self.assertEqual("新名称", updated["name"])
+            self.assertEqual("https://live.douyin.com/123", updated["live_url"])
+            self.assertEqual("高清", updated["default_quality"])
+
+    def test_edit_rejects_duplicate_profile_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            first = store.add("甲", "https://www.douyin.com/user/a")
+            store.add("乙", "https://www.douyin.com/user/b")
+
+            with self.assertRaisesRegex(ValueError, "已经存在"):
+                store.update(first["id"], {"profile_url": "https://www.douyin.com/user/b"})
+
 
 class RoomStoreTest(unittest.TestCase):
     def test_add_toggle_and_delete_preserves_other_lines(self):

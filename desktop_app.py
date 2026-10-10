@@ -331,6 +331,15 @@ def make_handler(state: AppState, token: str):
                         str(body.get("live_url", "")),
                     )
                     self._json({"anchor": anchor, "anchors": state.anchors.list()}, HTTPStatus.CREATED)
+                elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
+                    anchor = state.anchors.update(parts[2], {
+                        "name": body.get("name", ""),
+                        "profile_url": body.get("profile_url", ""),
+                        "live_url": body.get("live_url", ""),
+                        "default_quality": body.get("default_quality", "原画"),
+                        "enabled_recording": bool(body.get("enabled_recording", True)),
+                    })
+                    self._json({"anchor": anchor, "anchors": state.anchors.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "resolve":
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)

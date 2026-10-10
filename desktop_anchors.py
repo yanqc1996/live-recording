@@ -93,11 +93,25 @@ class AnchorStore:
         }
         with self._lock:
             data = self._load()
+            cleaned = {key: value for key, value in updates.items() if key in allowed}
+            if "name" in cleaned:
+                cleaned["name"] = str(cleaned["name"] or "").strip() or "未命名主播"
+            if "profile_url" in cleaned:
+                cleaned["profile_url"] = str(cleaned["profile_url"] or "").strip()
+                if not cleaned["profile_url"]:
+                    raise ValueError("主播主页、分享链接或直播间地址不能为空")
+                if any(
+                    anchor.get("id") != anchor_id and anchor.get("profile_url") == cleaned["profile_url"]
+                    for anchor in data["anchors"]
+                ):
+                    raise ValueError("该主播入口已经存在")
+            if "live_url" in cleaned:
+                cleaned["live_url"] = str(cleaned["live_url"] or "").strip().split("?")[0]
+                if cleaned["live_url"] and "live.douyin.com/" not in cleaned["live_url"]:
+                    raise ValueError("直播间地址必须是 live.douyin.com 链接")
             for anchor in data["anchors"]:
                 if anchor.get("id") == anchor_id:
-                    for key, value in updates.items():
-                        if key in allowed:
-                            anchor[key] = value
+                    anchor.update(cleaned)
                     anchor["updated_at"] = int(time.time())
                     self._save(data)
                     return anchor
