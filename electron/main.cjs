@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -44,14 +44,31 @@ function saveWindowState(patch) {
   return next;
 }
 
-function saveCompactWindowPosition() {
+function saveCompactWindowBounds() {
   if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
   clearTimeout(windowStateTimer);
   windowStateTimer = setTimeout(() => {
     if (!mainWindow || !compactMode || mainWindow.isDestroyed()) return;
-    const { x, y } = mainWindow.getBounds();
-    saveWindowState({ compact: { x, y } });
+    const { x, y, width, height } = mainWindow.getBounds();
+    saveWindowState({ compact: { x, y, width, height } });
   }, 250);
+}
+
+function compactBounds(saved, fallback) {
+  const width = Math.max(390, Math.min(680, Number(saved.width) || 430));
+  const height = Math.max(560, Math.min(900, Number(saved.height) || 720));
+  const candidate = {
+    x: Number.isFinite(saved.x) ? saved.x : fallback.x + Math.max(0, fallback.width - width),
+    y: Number.isFinite(saved.y) ? saved.y : fallback.y,
+    width,
+    height
+  };
+  const area = screen.getDisplayMatching(candidate).workArea;
+  return {
+    ...candidate,
+    x: Math.max(area.x, Math.min(candidate.x, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(candidate.y, area.y + area.height - height))
+  };
 }
 
 function allowedDouyinUrl(rawUrl) {
@@ -449,12 +466,7 @@ function registerIpc() {
       const saved = loadWindowState().compact || {};
       mainWindow.setMinimumSize(390, 560);
       mainWindow.setAlwaysOnTop(true, 'floating');
-      mainWindow.setBounds({
-        x: Number.isFinite(saved.x) ? saved.x : normalWindowBounds.x + Math.max(0, normalWindowBounds.width - 430),
-        y: Number.isFinite(saved.y) ? saved.y : normalWindowBounds.y,
-        width: 430,
-        height: 720
-      }, true);
+      mainWindow.setBounds(compactBounds(saved, normalWindowBounds), false);
       compactMode = true;
     } else {
       compactMode = false;
@@ -485,7 +497,8 @@ function createMainWindow() {
     }
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  mainWindow.on('move', saveCompactWindowPosition);
+  mainWindow.on('move', saveCompactWindowBounds);
+  mainWindow.on('resize', saveCompactWindowBounds);
   mainWindow.on('close', (event) => {
     if (process.platform !== 'darwin' || quitting) return;
     event.preventDefault();
