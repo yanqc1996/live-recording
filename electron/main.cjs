@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, powerSaveBlocker, screen, session, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, screen, session, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -25,6 +25,8 @@ let tray = null;
 let trayRefreshTimer = null;
 let trayState = null;
 let powerBlockerId = null;
+let notificationSnapshot = null;
+const activeNotifications = new Set();
 
 const BACKGROUND_DEFAULTS = {
   open_at_login: false,
@@ -97,6 +99,50 @@ function updatePowerBlocker(state) {
     powerSaveBlocker.stop(powerBlockerId);
     powerBlockerId = null;
   }
+}
+
+function showSystemNotification(title, body) {
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({ title, body, silent: false });
+  activeNotifications.add(notification);
+  notification.on('click', showMainWindow);
+  notification.on('close', () => activeNotifications.delete(notification));
+  notification.show();
+}
+
+function processStateNotifications(state) {
+  const settings = loadBackgroundSettings();
+  const rooms = state?.status?.room_states || {};
+  const queue = state?.baidupan?.queue || [];
+  const next = {
+    rooms: Object.fromEntries(Object.entries(rooms).map(([name, item]) => [name, item.state || 'waiting'])),
+    uploads: Object.fromEntries(queue.map((item) => [item.id, item.status]))
+  };
+  if (!notificationSnapshot) {
+    notificationSnapshot = next;
+    return;
+  }
+  if (settings.notify_recording) {
+    for (const [name, room] of Object.entries(rooms)) {
+      const before = notificationSnapshot.rooms[name];
+      if (room.state === 'recording' && before !== 'recording') {
+        showSystemNotification('主播已开播，开始录制', `${name}${room.path ? `\n${path.basename(room.path)}` : ''}`);
+      } else if (before === 'recording' && room.state !== 'recording') {
+        showSystemNotification('直播录制已结束', `${name}的录像已经保存并进入后续处理。`);
+      }
+    }
+  }
+  for (const item of queue) {
+    const before = notificationSnapshot.uploads[item.id];
+    if (!before || before === item.status) continue;
+    const name = item.record_name || path.basename(item.save_file_path || '') || '录像文件';
+    if (item.status === 'success' && settings.notify_upload) {
+      showSystemNotification('百度网盘归档完成', `${name}已成功上传。`);
+    } else if (item.status === 'failed' && settings.notify_errors) {
+      showSystemNotification('百度网盘上传失败', `${name}上传失败，可在上传队列中重试。`);
+    }
+  }
+  notificationSnapshot = next;
 }
 
 function windowStatePath() {
@@ -360,6 +406,7 @@ function rebuildTrayMenu() {
 async function refreshTray() {
   try {
     trayState = await backendState();
+    processStateNotifications(trayState);
   } catch {
     trayState = null;
   }
@@ -723,7 +770,10 @@ else {
       await createMainWindow();
       await syncDouyinSession();
       createTray();
-      ensureAutomaticRecording().catch((error) => console.error(`自动开始录制失败：${error.message}`));
+      ensureAutomaticRecording().catch((error) => {
+        console.error(`自动开始录制失败：${error.message}`);
+        if (loadBackgroundSettings().notify_errors) showSystemNotification('自动录制未能启动', error.message);
+      });
     } catch (error) {
       console.error(error);
       dialog.showErrorBox('播录助手启动失败', error.message);
@@ -731,7 +781,10 @@ else {
     }
     powerMonitor.on('resume', () => {
       setTimeout(() => {
-        ensureAutomaticRecording().catch((error) => console.error(`唤醒后恢复录制失败：${error.message}`));
+        ensureAutomaticRecording().catch((error) => {
+          console.error(`唤醒后恢复录制失败：${error.message}`);
+          if (loadBackgroundSettings().notify_errors) showSystemNotification('唤醒后恢复录制失败', error.message);
+        });
         refreshTray().catch(() => {});
       }, 2500);
     });
