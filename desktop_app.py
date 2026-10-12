@@ -103,6 +103,9 @@ class LazyDouyinInteraction:
     def resolve_live_room(self, value: str) -> dict:
         return self._load().resolve_live_room(value)
 
+    def search_users(self, keyword: str, limit: int = 12) -> dict:
+        return self._load().search_users(keyword, limit)
+
 
 class AppState:
     def __init__(self):
@@ -331,6 +334,8 @@ def make_handler(state: AppState, token: str):
                         str(body.get("live_url", "")),
                     )
                     self._json({"anchor": anchor, "anchors": state.anchors.list()}, HTTPStatus.CREATED)
+                elif path == "/api/anchors/search":
+                    self._json(state.interaction.search_users(str(body.get("keyword", "")), int(body.get("limit", 12))))
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
                     anchor = state.anchors.update(parts[2], {
                         "name": body.get("name", ""),

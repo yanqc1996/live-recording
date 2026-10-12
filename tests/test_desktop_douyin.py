@@ -11,6 +11,7 @@ from desktop_douyin import (
     _decode_live_response,
     fetch_live_room_info,
     resolve_live_room,
+    search_douyin_users,
 )
 from douyin_static import Live_pb2
 
@@ -60,6 +61,25 @@ class DouyinProfileResolverTest(unittest.TestCase):
         self.assertEqual("O泡", result["nickname"])
         self.assertEqual("https://live.douyin.com/200612o4", result["room_url"])
         self.assertIn("当前未开播", result["message"])
+
+    @patch("desktop_douyin._a_bogus", return_value="signed")
+    @patch("desktop_douyin.requests.get")
+    def test_user_search_normalizes_nested_candidates(self, request_get, _sign):
+        request_get.return_value = FakeResponse({"status_code": 0, "data": [{"user_list": [{"user_info": {
+            "nickname": "晚风电台", "unique_id": "wanfengFM", "sec_uid": "MS4wLjAB-search-result",
+            "signature": "睡前聊天", "follower_count": "12345", "live_status": 1,
+            "avatar_thumb": {"url_list": ["https://example.com/avatar.jpg"]},
+        }}]}]})
+
+        users = search_douyin_users(DouyinAuthState.from_cookie("sessionid_ss=token"), "晚风", 10)
+
+        self.assertEqual(1, len(users))
+        self.assertEqual("晚风电台", users[0]["nickname"])
+        self.assertEqual("wanfengFM", users[0]["display_id"])
+        self.assertEqual(12345, users[0]["follower_count"])
+        self.assertTrue(users[0]["is_live"])
+        self.assertTrue(users[0]["profile_url"].endswith("MS4wLjAB-search-result"))
+        self.assertEqual("aweme_user_web", request_get.call_args.kwargs["params"]["search_channel"])
 
     @patch("desktop_douyin.requests.get")
     def test_current_live_page_script_without_nonce_is_supported(self, request_get):

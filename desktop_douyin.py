@@ -307,6 +307,102 @@ def _resolve_profile_live_room(auth: "DouyinAuthState", value: str) -> dict:
     }
 
 
+def _avatar_url(user: dict) -> str:
+    for key in ("avatar_thumb", "avatar_medium", "avatar_larger"):
+        avatar = user.get(key) or {}
+        urls = avatar.get("url_list") if isinstance(avatar, dict) else []
+        if urls:
+            return str(urls[0])
+    return ""
+
+
+def _normalize_user_search_results(payload: dict, limit: int = 12) -> list[dict]:
+    """Collect user records from the response's version-dependent nesting."""
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def visit(value) -> None:
+        if len(results) >= limit:
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+            return
+        if not isinstance(value, dict):
+            return
+        user = value.get("user_info") or value.get("user")
+        if not isinstance(user, dict):
+            user = value
+        sec_uid = str(user.get("sec_uid") or user.get("sec_user_id") or "").strip()
+        nickname = str(user.get("nickname") or user.get("nick_name") or "").strip()
+        if sec_uid and nickname and sec_uid not in seen:
+            seen.add(sec_uid)
+            unique_id = str(user.get("unique_id") or "").strip()
+            short_id = str(user.get("short_id") or "").strip()
+            display_id = unique_id or (short_id if short_id != "0" else "")
+            follower_count = user.get("follower_count")
+            try:
+                follower_count = int(follower_count) if follower_count is not None else None
+            except (TypeError, ValueError):
+                follower_count = None
+            results.append({
+                "nickname": nickname,
+                "display_id": display_id,
+                "sec_user_id": sec_uid,
+                "profile_url": f"{DOUYIN_WEB_ORIGIN}/user/{sec_uid}",
+                "avatar_url": _avatar_url(user),
+                "signature": str(user.get("signature") or user.get("signature_extra") or "").strip(),
+                "follower_count": follower_count,
+                "is_live": str(user.get("live_status") or "") in {"1", "2"},
+            })
+        for child in value.values():
+            if child is not user:
+                visit(child)
+
+    visit(payload)
+    return results
+
+
+def search_douyin_users(auth: "DouyinAuthState", keyword: str, limit: int = 12) -> list[dict]:
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        raise ValueError("请输入主播昵称或抖音号")
+    if len(keyword) > 60:
+        raise ValueError("搜索内容过长，请输入主播昵称或抖音号")
+    limit = max(1, min(int(limit or 12), 20))
+    params = {
+        "device_platform": "webapp", "aid": "6383", "channel": "channel_pc_web",
+        "search_channel": "aweme_user_web", "keyword": keyword,
+        "search_source": "normal_search", "query_correct_type": "1",
+        "is_filter_search": "0", "offset": "0", "count": str(limit),
+        "need_filter_settings": "1", "list_type": "single", "pc_client_type": "1",
+        "cookie_enabled": "true", "browser_language": "zh-CN",
+        "browser_platform": "MacIntel", "browser_name": "Chrome",
+        "screen_width": "1920", "screen_height": "1080", "msToken": _ms_token(auth.cookie),
+    }
+    try:
+        params["a_bogus"] = _a_bogus(params)
+    except Exception:
+        pass
+    response = requests.get(
+        f"{DOUYIN_WEB_ORIGIN}/aweme/v1/web/general/search/single/",
+        params=params,
+        headers={
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "referer": f"{DOUYIN_WEB_ORIGIN}/search/{urllib.parse.quote(keyword)}?type=user",
+            "user-agent": UA,
+        },
+        cookies=auth.cookie,
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status_code") not in (None, 0):
+        raise RuntimeError(payload.get("status_msg") or "抖音搜索接口返回异常")
+    return _normalize_user_search_results(payload, limit)
+
+
 @dataclass
 class DouyinSecurity:
     ticket: str = ""
@@ -1153,3 +1249,11 @@ class DouyinInteractionManager:
             raise RuntimeError(f"无法解析直播间：{exc}{suffix}") from exc
         result["access_mode"] = self._auth.access_mode
         return result
+
+    def search_users(self, keyword: str, limit: int = 12) -> dict:
+        try:
+            users = search_douyin_users(self._auth, keyword, limit)
+        except Exception as exc:
+            suffix = "；登录抖音后搜索通常更稳定" if not self.connected else ""
+            raise RuntimeError(f"无法搜索主播：{exc}{suffix}") from exc
+        return {"keyword": str(keyword or "").strip(), "users": users, "access_mode": self._auth.access_mode}
