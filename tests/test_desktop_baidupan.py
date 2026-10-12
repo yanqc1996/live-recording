@@ -7,6 +7,15 @@ from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_verified_upload_cleanup_is_enabled_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = BaiduPanUploadManager(root, root).load_config()
+
+            self.assertTrue(config["delete_after_upload"])
+            self.assertEqual(config["keep_local_days"], 0)
+            self.assertEqual(config["cleanup_below_free_gb"], 0)
+
     def test_concurrency_defaults_to_three_and_is_capped_at_five(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
