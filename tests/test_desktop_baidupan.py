@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -110,6 +111,30 @@ class BaiduPanUploadManagerTest(unittest.TestCase):
                 "cleanup_below_free_gb": 0,
                 "save_file_path": str(video),
                 "created_at": 1,
+            }])
+
+            manager.status()
+
+            self.assertTrue(video.exists())
+
+    def test_local_retention_starts_when_upload_finishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "recording.mp4"
+            video.write_bytes(b"video")
+            old = time.time() - 30 * 86400
+            os.utime(video, (old, old))
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([{
+                "id": "retained",
+                "status": "success",
+                "remote_verified": True,
+                "delete_after_upload": True,
+                "keep_local_days": 7,
+                "cleanup_below_free_gb": 0,
+                "save_file_path": str(video),
+                "created_at": int(old),
+                "updated_at": int(time.time()),
             }])
 
             manager.status()

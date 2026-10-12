@@ -616,7 +616,8 @@ class BaiduPanUploadManager:
                 existing = [path for path in paths if path.exists() and path.is_file()]
                 if existing:
                     keep_seconds = int(item.get("keep_local_days") or 0) * 86400
-                    if keep_seconds and any(now - path.stat().st_mtime < keep_seconds for path in existing):
+                    uploaded_at = int(item.get("updated_at") or item.get("created_at") or 0)
+                    if keep_seconds and uploaded_at and now - uploaded_at < keep_seconds:
                         continue
                     threshold = int(item.get("cleanup_below_free_gb") or 0) * 1024 ** 3
                     if threshold and shutil.disk_usage(existing[0].parent).free >= threshold:
