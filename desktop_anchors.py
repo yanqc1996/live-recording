@@ -81,14 +81,15 @@ class AnchorStore:
     def import_rooms(self, rooms: list[dict]) -> int:
         """Import legacy recorder entries without duplicating known URLs."""
         imported = 0
+        changed = False
         with self._lock:
             data = self._load()
-            known = {
-                str(anchor.get(key) or "").strip().split("?")[0]
-                for anchor in data["anchors"]
-                for key in ("profile_url", "live_url")
-                if anchor.get(key)
-            }
+            known = {}
+            for anchor in data["anchors"]:
+                for key in ("profile_url", "live_url"):
+                    value = str(anchor.get(key) or "").strip().split("?")[0]
+                    if value:
+                        known[value] = anchor
             now = int(time.time())
             for room in rooms:
                 value = str(room.get("value") or "")
@@ -97,6 +98,11 @@ class AnchorStore:
                     continue
                 url = match.group(0).split("?")[0]
                 if url in known:
+                    active = bool(room.get("active", True))
+                    if known[url].get("enabled_recording", True) != active:
+                        known[url]["enabled_recording"] = active
+                        known[url]["updated_at"] = now
+                        changed = True
                     continue
                 name_match = re.search(r"主播\s*[:：]\s*([^,，]+)", value)
                 fallback = urlparse(url).netloc or "未命名主播"
@@ -116,9 +122,9 @@ class AnchorStore:
                     "created_at": now,
                     "updated_at": now,
                 })
-                known.add(url)
+                known[url] = data["anchors"][-1]
                 imported += 1
-            if imported:
+            if imported or changed:
                 self._save(data)
         return imported
 

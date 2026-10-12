@@ -2,8 +2,8 @@ import { ActionIcon, Button, Group, Switch, Text, TextInput, Tooltip } from '@ma
 import { FolderOpen, Plus, Square, Trash2, Video } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { Empty, PageGrid, Panel, StatusBadge, formatBytes, roomLabel, roomUrl } from '../components';
-import type { AppState, Room } from '../types';
+import { Empty, PageGrid, Panel, StatusBadge, anchorLiveUrl, formatBytes } from '../components';
+import type { Anchor, AppState } from '../types';
 
 export function DashboardPage({ state, refresh, notify }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void }) {
   const [room, setRoom] = useState('');
@@ -18,19 +18,19 @@ export function DashboardPage({ state, refresh, notify }: { state: AppState; ref
     poll(); const timer = window.setInterval(poll, 1000); return () => clearInterval(timer);
   }, [cursor, detailed]);
   const act = async (fn: () => Promise<any>, message: string) => { setBusy(true); try { await fn(); await refresh(); notify(message); } catch (e) { notify((e as Error).message, true); } finally { setBusy(false); } };
-  const addRoom = () => act(async () => { await api('/api/rooms', { value: room }); setRoom(''); }, '直播间已添加');
-  const toggle = (item: Room, active: boolean) => act(() => api(`/api/rooms/${item.id}`, { active }), active ? '直播间已启用' : '直播间已暂停');
-  const remove = (item: Room) => { if (confirm(`确定删除 ${roomLabel(item.value)} 吗？`)) act(() => api(`/api/rooms/${item.id}`, undefined, 'DELETE'), '直播间已删除'); };
+  const addRoom = () => act(async () => { await api('/api/anchors', { name: '未命名主播', profile_url: room, live_url: room }); setRoom(''); }, '主播已加入数据集');
+  const toggle = (item: Anchor, active: boolean) => act(() => api(`/api/anchors/${item.id}`, { enabled_recording: active }), active ? '已启用录制' : '已暂停录制');
+  const remove = (item: Anchor) => { if (confirm(`确定从主播数据集中删除 ${item.name} 吗？`)) act(() => api(`/api/anchors/${item.id}`, undefined, 'DELETE'), '主播已删除'); };
   const recordings = state.recording_groups || [];
   return <PageGrid>
     <div className="column">
-      <Panel title="直播间" badge={<Text c="dimmed" size="sm">{state.rooms.filter(r => r.active).length} / {state.rooms.length} 已启用</Text>}>
-        <div className="list">{state.rooms.length ? state.rooms.map(item => <div className="listRow" key={item.id}>
-          <Switch checked={item.active} disabled={running || busy} onChange={e => toggle(item, e.currentTarget.checked)} />
-          <div className="grow"><Group gap="xs"><Text fw={700}>{roomLabel(item.value)}</Text><StatusBadge value={!item.active ? 'paused' : running ? 'recording' : 'pending'} /></Group><Text size="xs" c="dimmed" truncate>{roomUrl(item.value)}</Text></div>
+      <Panel title="录制主播" badge={<Text c="dimmed" size="sm">{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length} / {state.anchors.length} 已启用</Text>}>
+        <div className="list">{state.anchors.length ? state.anchors.map(item => <div className="listRow" key={item.id}>
+          <Switch checked={item.enabled_recording !== false} disabled={running || busy || !anchorLiveUrl(item)} onChange={e => toggle(item, e.currentTarget.checked)} />
+          <div className="grow"><Group gap="xs"><Text fw={700}>{item.name}</Text><StatusBadge value={!anchorLiveUrl(item) ? 'error' : item.enabled_recording === false ? 'paused' : running ? 'recording' : 'pending'} /></Group><Text size="xs" c="dimmed" truncate>{anchorLiveUrl(item) || '尚未解析直播间地址'}</Text></div>
           <Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>
         </div>) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
-        <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址" leftSection={<Plus size={16} />} flex={1} /><Button onClick={addRoom}>添加</Button></Group>
+        <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址，加入统一主播库" leftSection={<Plus size={16} />} flex={1} /><Button disabled={!room.trim()} onClick={addRoom}>添加</Button></Group>
       </Panel>
       <Panel title="运行日志" actions={<Group gap="xs"><Button size="xs" variant="subtle" onClick={() => setDetailed(v => !v)}>{detailed ? '只看关键节点' : '显示详细日志'}</Button><Button size="xs" variant="subtle" onClick={() => setLogs([])}>清空</Button></Group>}>
         <pre className="logBox">{logs.length ? logs.join('\n') : '等待录制服务输出…'}</pre>

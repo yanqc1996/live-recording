@@ -24,3 +24,9 @@ export function Section({ children }: { children: ReactNode }) { return <Stack g
 export const formatBytes = (size = 0) => size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : size < 1073741824 ? `${(size / 1048576).toFixed(1)} MB` : `${(size / 1073741824).toFixed(1)} GB`;
 export const roomUrl = (value = '') => String(value).match(/https?:\/\/[^\s,，]+/)?.[0] || String(value);
 export const roomLabel = (value = '') => String(value).match(/主播\s*[:：]\s*([^,，]+)/)?.[1]?.trim() || (() => { try { return new URL(roomUrl(value)).hostname; } catch { return '直播间'; } })();
+export const anchorLiveUrl = (anchor?: { profile_url?: string; live_url?: string }) => {
+  const live = roomUrl(anchor?.live_url || '');
+  if (live) return live;
+  const profile = roomUrl(anchor?.profile_url || '');
+  return profile.includes('live.douyin.com/') ? profile : '';
+};

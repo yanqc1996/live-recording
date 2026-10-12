@@ -366,17 +366,8 @@ def make_handler(state: AppState, token: str):
                     state.sync_recording_rooms()
                     self._json({"anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
-                    anchor = state.anchors.update(parts[2], {
-                        "name": body.get("name", ""),
-                        "profile_url": body.get("profile_url", ""),
-                        "sec_user_id": body.get("sec_user_id", ""),
-                        "live_url": body.get("live_url", ""),
-                        "web_rid": body.get("web_rid", ""),
-                        "room_id": body.get("room_id", ""),
-                        "default_quality": body.get("default_quality", "原画"),
-                        "output_dir": body.get("output_dir", ""),
-                        "enabled_recording": bool(body.get("enabled_recording", True)),
-                    })
+                    editable = ("name", "profile_url", "sec_user_id", "live_url", "web_rid", "room_id", "default_quality", "output_dir", "enabled_recording")
+                    anchor = state.anchors.update(parts[2], {key: body[key] for key in editable if key in body})
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "resolve":
