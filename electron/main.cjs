@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, session, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -21,6 +21,9 @@ let douyinSecurity = {};
 let normalWindowBounds = null;
 let compactMode = false;
 let windowStateTimer = null;
+let tray = null;
+let trayRefreshTimer = null;
+let trayState = null;
 
 function windowStatePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
@@ -202,6 +205,90 @@ async function postBackend(pathname, body) {
   });
   if (!response.ok) throw new Error((await response.json()).error || '本地服务请求失败');
   return response.json();
+}
+
+async function backendState() {
+  if (!backendUrl) throw new Error('录制引擎尚未就绪');
+  const origin = new URL(backendUrl).origin;
+  const response = await fetch(`${origin}/api/state`, {
+    headers: { 'X-LiveRecorder-Token': backendToken }
+  });
+  if (!response.ok) throw new Error((await response.json()).error || '无法读取本地服务状态');
+  return response.json();
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+async function openCompactWindow() {
+  showMainWindow();
+  await mainWindow.webContents.executeJavaScript('setCompactMode(true)');
+}
+
+function trayIcon() {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><rect x="2" y="3" width="14" height="12" rx="3" fill="black"/><path d="M7 6.2v5.6l4.7-2.8z" fill="white"/><circle cx="14.4" cy="4" r="2.1" fill="black" stroke="white" stroke-width="1"/></svg>';
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
+  image.setTemplateImage(true);
+  return image;
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return;
+  const recording = Boolean(trayState?.status?.running);
+  const roomStates = Object.values(trayState?.status?.room_states || {});
+  const recordingRooms = roomStates.filter((item) => item.state === 'recording').length;
+  const uploads = trayState?.baidupan || {};
+  const uploading = Array.isArray(uploads.progresses) ? uploads.progresses.length : 0;
+  const pending = Number(uploads.pending || 0);
+  tray.setToolTip(recording ? `播录助手 · ${recordingRooms || '正在'}录制` : '播录助手 · 后台待机');
+  if (process.platform === 'darwin') tray.setTitle(recording ? ' ●' : '');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: recording ? `● 正在录制${recordingRooms ? ` · ${recordingRooms} 个直播间` : ''}` : '○ 录制服务待机', enabled: false },
+    { label: uploading ? `网盘上传中 · ${uploading} 个文件` : pending ? `网盘队列 · ${pending} 个任务` : '网盘队列空闲', enabled: false },
+    { type: 'separator' },
+    {
+      label: recording ? '停止录制并保存' : '开始自动录制',
+      click: async () => {
+        try {
+          if (recording) await postBackend('/api/stop', {});
+          else {
+            const state = await backendState();
+            await postBackend('/api/start', { settings: state.settings || {} });
+          }
+          await refreshTray();
+        } catch (error) {
+          dialog.showErrorBox('录制操作失败', error.message);
+        }
+      }
+    },
+    { label: '打开小窗控制', click: () => openCompactWindow().catch((error) => dialog.showErrorBox('无法打开小窗', error.message)) },
+    { label: '打开播录助手', click: showMainWindow },
+    { label: '隐藏窗口', enabled: Boolean(mainWindow?.isVisible()), click: () => mainWindow?.hide() },
+    { type: 'separator' },
+    { label: '退出播录助手', click: () => app.quit() }
+  ]));
+}
+
+async function refreshTray() {
+  try {
+    trayState = await backendState();
+  } catch {
+    trayState = null;
+  }
+  rebuildTrayMenu();
+}
+
+function createTray() {
+  if (tray) return;
+  tray = new Tray(trayIcon());
+  rebuildTrayMenu();
+  refreshTray().catch(() => {});
+  trayRefreshTimer = setInterval(() => refreshTray().catch(() => {}), 3000);
+  trayRefreshTimer.unref?.();
 }
 
 function normalizeSecurityCandidate(value) {
@@ -510,7 +597,7 @@ function createMainWindow() {
       type: 'info',
       title: '播录助手已在后台运行',
       message: '窗口已隐藏，当前任务不会中断',
-      detail: '录制、直播音频和弹幕监听会继续运行。点击 Dock 中的播录助手可重新打开；如需完全退出，请按 ⌘Q。',
+      detail: '录制、直播音频和弹幕监听会继续运行。可从顶部菜单栏图标重新打开或控制录制；如需完全退出，请按 ⌘Q。',
       buttons: ['知道了'],
       defaultId: 0,
       noLink: true
@@ -527,7 +614,7 @@ const lock = app.requestSingleInstanceLock();
 if (!lock) app.quit();
 else {
   app.on('second-instance', () => {
-    if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+    showMainWindow();
   });
   app.whenReady().then(async () => {
     registerIpc();
@@ -535,6 +622,7 @@ else {
       await startBackend();
       await createMainWindow();
       await syncDouyinSession();
+      createTray();
     } catch (error) {
       console.error(error);
       dialog.showErrorBox('播录助手启动失败', error.message);
@@ -542,7 +630,7 @@ else {
     }
     app.on('activate', () => {
       if (!mainWindow) createMainWindow();
-      else { mainWindow.show(); mainWindow.focus(); }
+      else showMainWindow();
     });
   });
 }
@@ -593,6 +681,7 @@ app.on('before-quit', (event) => {
       }
     }
     quitting = true;
+    if (trayRefreshTimer) clearInterval(trayRefreshTimer);
     app.quit();
   })().catch((error) => {
     console.error(error);
