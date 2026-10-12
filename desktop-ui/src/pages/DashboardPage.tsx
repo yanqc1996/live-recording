@@ -22,14 +22,26 @@ export function DashboardPage({ state, refresh, notify }: { state: AppState; ref
   const toggle = (item: Anchor, active: boolean) => act(() => api(`/api/anchors/${item.id}`, { enabled_recording: active }), active ? '已启用录制' : '已暂停录制');
   const remove = (item: Anchor) => { if (confirm(`确定从主播数据集中删除 ${item.name} 吗？`)) act(() => api(`/api/anchors/${item.id}`, undefined, 'DELETE'), '主播已删除'); };
   const recordings = state.recording_groups || [];
+  const roomStates = state.status?.room_states || {};
+  const displayState = (anchor: Anchor) => {
+    if (!anchorLiveUrl(anchor)) return 'error';
+    if (anchor.enabled_recording === false) return 'paused';
+    const runtime = roomStates[anchor.name]?.state;
+    if (runtime === 'recording' || runtime === 'live') return runtime;
+    if (running) return 'waiting';
+    return anchor.last_live_status || 'unknown';
+  };
+  const activeCount = state.anchors.filter(anchor => displayState(anchor) === 'live' || displayState(anchor) === 'recording').length;
+  const recordingCount = state.anchors.filter(anchor => displayState(anchor) === 'recording').length;
   return <PageGrid>
     <div className="column">
-      <Panel title="录制主播" badge={<Text c="dimmed" size="sm">{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length} / {state.anchors.length} 已启用</Text>}>
-        <div className="list">{state.anchors.length ? state.anchors.map(item => <div className="listRow" key={item.id}>
+      <Panel title="主播开播状态" badge={<Group gap="xs"><StatusBadge value={recordingCount ? 'recording' : activeCount ? 'live' : running ? 'waiting' : 'stopped'} /><Text c="dimmed" size="sm">{recordingCount} 个录制中 · {activeCount} 个已开播</Text></Group>}>
+        <div className="recordingSummary"><div><strong>{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length}</strong><span>监控主播</span></div><div className="live"><strong>{activeCount}</strong><span>当前开播</span></div><div className="recording"><strong>{recordingCount}</strong><span>正在录制</span></div></div>
+        <div className="list roomStatusList">{state.anchors.length ? state.anchors.map(item => { const runtime=roomStates[item.name]; const status=displayState(item); return <div className={`listRow roomStatus ${status}`} key={item.id}>
           <Switch checked={item.enabled_recording !== false} disabled={running || busy || !anchorLiveUrl(item)} onChange={e => toggle(item, e.currentTarget.checked)} />
-          <div className="grow"><Group gap="xs"><Text fw={700}>{item.name}</Text><StatusBadge value={!anchorLiveUrl(item) ? 'error' : item.enabled_recording === false ? 'paused' : running ? 'recording' : 'pending'} /></Group><Text size="xs" c="dimmed" truncate>{anchorLiveUrl(item) || '尚未解析直播间地址'}</Text></div>
+          <div className="grow"><Group gap="xs"><span className="roomStateDot"/><Text fw={700}>{item.name}</Text><StatusBadge value={status} /></Group><Text size="xs" c="dimmed" truncate>{runtime?.path ? `正在写入：${runtime.path}` : status === 'waiting' ? '录制服务正在巡检，开播后会自动开始录制' : status === 'live' ? '已检测到开播，正在准备录制' : anchorLiveUrl(item) || '尚未解析直播间地址'}</Text>{runtime?.updated_at&&<Text size="xs" c="dimmed">状态更新：{new Date(runtime.updated_at*1000).toLocaleTimeString()}</Text>}</div>
           <Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>
-        </div>) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
+        </div>}) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
         <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址，加入统一主播库" leftSection={<Plus size={16} />} flex={1} /><Button disabled={!room.trim()} onClick={addRoom}>添加</Button></Group>
       </Panel>
       <Panel title="运行日志" actions={<Group gap="xs"><Button size="xs" variant="subtle" onClick={() => setDetailed(v => !v)}>{detailed ? '只看关键节点' : '显示详细日志'}</Button><Button size="xs" variant="subtle" onClick={() => setLogs([])}>清空</Button></Group>}>
