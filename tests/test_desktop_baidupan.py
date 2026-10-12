@@ -84,6 +84,32 @@ class BaiduPanUploadManagerTest(unittest.TestCase):
 
             self.assertTrue(video.exists())
 
+    def test_verified_segment_upload_cleans_each_actual_uploaded_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "recording_000.mp4"
+            second = root / "recording_001.mp4"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([{
+                "id": "segments",
+                "status": "success",
+                "remote_verified": True,
+                "delete_after_upload": True,
+                "keep_local_days": 0,
+                "cleanup_below_free_gb": 0,
+                "save_file_path": str(root / "recording.ts"),
+                "uploaded_files": [str(first), str(second)],
+                "created_at": 1,
+            }])
+
+            status = manager.status()
+
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertTrue(status["queue"][0]["local_deleted"])
+
     def test_pending_item_can_be_paused_resumed_and_cancelled(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

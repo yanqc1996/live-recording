@@ -510,9 +510,13 @@ class BaiduPanUploadManager:
                     self._progresses[item["id"]]["stage"] = "正在上传"
             assert process.stdout is not None
             tail: deque[str] = deque(maxlen=20)
+            uploaded_files: list[str] = []
             for line in process.stdout:
                 tail.append(line.rstrip())
                 self._append_log(line)
+                uploaded = re.search(r"^\[baidupan\] uploaded: (.+?) -> ", line.rstrip())
+                if uploaded:
+                    uploaded_files.append(uploaded.group(1))
                 percent = re.search(r"(?<!\d)(100|\d{1,2})(?:\.\d+)?%", line)
                 if percent:
                     with self._lock:
@@ -534,7 +538,7 @@ class BaiduPanUploadManager:
             if current_status in {"paused", "cancelled"}:
                 return
             if return_code == 0:
-                self._finish_item(item["id"], "success", "", remote_verified=True)
+                self._finish_item(item["id"], "success", "", remote_verified=True, uploaded_files=uploaded_files)
                 self._append_log(f"上传完成：{item.get('save_file_path')}")
                 self._cleanup_uploaded_files()
             else:
@@ -548,7 +552,7 @@ class BaiduPanUploadManager:
                 self._active_processes.pop(item["id"], None)
                 self._progresses.pop(item["id"], None)
 
-    def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False) -> None:
+    def _finish_item(self, item_id: str, status: str, error: str, remote_verified: bool = False, uploaded_files: list[str] | None = None) -> None:
         with self._lock:
             queue = self._load_queue()
             for item in queue:
@@ -557,6 +561,8 @@ class BaiduPanUploadManager:
                     item["error"] = error
                     item["updated_at"] = int(time.time())
                     item["remote_verified"] = bool(remote_verified)
+                    if uploaded_files:
+                        item["uploaded_files"] = list(dict.fromkeys(uploaded_files))
                     break
             self._save_queue(queue)
 
@@ -570,23 +576,22 @@ class BaiduPanUploadManager:
                     continue
                 if item.get("local_deleted"):
                     continue
-                path = Path(str(item.get("save_file_path") or ""))
-                if not path.exists() or not path.is_file():
-                    item["local_deleted"] = True
-                    changed = True
-                    continue
-                keep_seconds = int(item.get("keep_local_days") or 0) * 86400
-                if keep_seconds and now - path.stat().st_mtime < keep_seconds:
-                    continue
-                threshold = int(item.get("cleanup_below_free_gb") or 0) * 1024 ** 3
-                if threshold and shutil.disk_usage(path.parent).free >= threshold:
-                    continue
+                paths = [Path(str(value)) for value in item.get("uploaded_files") or [item.get("save_file_path") or ""]]
+                existing = [path for path in paths if path.exists() and path.is_file()]
+                if existing:
+                    keep_seconds = int(item.get("keep_local_days") or 0) * 86400
+                    if keep_seconds and any(now - path.stat().st_mtime < keep_seconds for path in existing):
+                        continue
+                    threshold = int(item.get("cleanup_below_free_gb") or 0) * 1024 ** 3
+                    if threshold and shutil.disk_usage(existing[0].parent).free >= threshold:
+                        continue
                 try:
-                    path.unlink()
+                    for path in existing:
+                        path.unlink()
+                        self._append_log(f"远端已确认，已清理本地文件：{path}")
                     item["local_deleted"] = True
                     item["deleted_at"] = int(now)
                     changed = True
-                    self._append_log(f"远端已确认，已清理本地文件：{path}")
                 except OSError as exc:
                     item["cleanup_error"] = str(exc)
                     changed = True

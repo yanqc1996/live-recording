@@ -128,14 +128,18 @@ def resolve_upload_files(
     converted_ext = ".mp4" if converts_to_mp4 and save_type.upper() == "TS" else source_ext
 
     if split_video_by_time:
-        wildcard_name = source.name.replace("%03d", "*")
-        prefix_name = source.name.split("%03d", maxsplit=1)[0]
+        if "%03d" in source.name:
+            prefix_name = source.name.split("%03d", maxsplit=1)[0]
+        else:
+            # Recorder logs contain the base path (scene.ts), while segmented
+            # conversion produces scene_000.mp4, scene_001.mp4, and so on.
+            prefix_name = source.stem
         pattern = str(source.parent / f"{prefix_name}*{converted_ext}")
         files = stable_files(pattern, timeout=wait_timeout)
         if files:
             return files
 
-        fallback_pattern = str(source.parent / wildcard_name)
+        fallback_pattern = str(source.parent / f"{prefix_name}*{source_ext}")
         return stable_files(fallback_pattern, timeout=4)
 
     target = source.with_suffix(converted_ext)
