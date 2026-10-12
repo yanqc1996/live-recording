@@ -44,6 +44,12 @@ class AnchorStore:
             anchors.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or 0, reverse=True)
             return anchors
 
+    def get(self, anchor_id: str) -> dict:
+        anchor = next((item for item in self.list() if item.get("id") == anchor_id), None)
+        if not anchor:
+            raise IndexError("主播不存在")
+        return anchor
+
     def add(self, name: str, profile_url: str, live_url: str = "") -> dict:
         name = name.strip()
         profile_url = profile_url.strip()

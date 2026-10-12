@@ -125,6 +125,22 @@ class AppState:
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
 
+    def anchor_live_url(self, anchor_id: str) -> str:
+        anchor = self.anchors.get(anchor_id)
+        live_url = str(anchor.get("live_url") or "").strip()
+        profile_url = str(anchor.get("profile_url") or "").strip()
+        value = live_url or (profile_url if "live.douyin.com/" in profile_url else "")
+        if not value:
+            raise ValueError("该主播还没有可用直播间地址，请先自动补全")
+        return value
+
+    def anchor_works_url(self, anchor_id: str) -> str:
+        anchor = self.anchors.get(anchor_id)
+        value = str(anchor.get("profile_url") or anchor.get("sec_user_id") or "").strip()
+        if not value:
+            raise ValueError("该主播还没有作品主页或 sec_user_id")
+        return value
+
     def _on_recorder_log(self, line: str) -> None:
         candidate_match = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if candidate_match:
@@ -511,29 +527,34 @@ def make_handler(state: AppState, token: str):
                     state.work_pull.set_auth(str(body.get("cookie", "")))
                     self._json({"connected": state.recorder.has_douyin_session})
                 elif path == "/api/interaction/start":
-                    self._json({"interaction": state.interaction.start_listening(str(body.get("room_url", "")))})
+                    room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
+                    self._json({"interaction": state.interaction.start_listening(room_url)})
                 elif path == "/api/interaction/stop":
                     self._json({"interaction": state.interaction.stop_listening()})
                 elif path == "/api/interaction/send":
                     self._json(state.interaction.send_chat(str(body.get("content", ""))))
                 elif path == "/api/interaction/audio-source":
+                    anchor = state.anchors.get(str(body["anchor_id"])) if body.get("anchor_id") else None
+                    room_url = state.anchor_live_url(str(body["anchor_id"])) if anchor else str(body.get("room_url", ""))
                     self._json({
                         "audio": state.interaction.audio_source(
-                            str(body.get("room_url", "")),
-                            str(body.get("quality", "原画")),
+                            room_url,
+                            str(body.get("quality") or (anchor or {}).get("default_quality") or "原画"),
                         )
                     })
                 elif path == "/api/interaction/audio-stop":
                     state.interaction.stop_audio()
                     self._json({"ok": True})
                 elif path == "/api/interaction/gift-rank":
-                    self._json({"gift_rank": state.interaction.gift_rank(str(body.get("room_url", "")))})
+                    room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
+                    self._json({"gift_rank": state.interaction.gift_rank(room_url)})
                 elif path == "/api/douyin/resolve-live-room":
                     self._json({"live_room": state.interaction.resolve_live_room(str(body.get("url", "")))})
                 elif path == "/api/work-pull/start":
+                    user_url = state.anchor_works_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("user_url", ""))
                     self._json({
                         "work_pull": state.work_pull.start(
-                            str(body.get("user_url", "")),
+                            user_url,
                             str(body.get("output_path", "") or state.output_path()),
                             bool(body.get("force")),
                         )
