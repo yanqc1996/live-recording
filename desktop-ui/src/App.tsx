@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Group, Loader, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Button, Group, Loader, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
 import { Archive, CircleUserRound, Headphones, Library, Menu, PanelLeftClose, Radio, RadioTower, Settings, Square, Video } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { api, audioStreamUrl } from './api';
@@ -22,12 +22,17 @@ const pageMeta: Record<string, [string, string]> = {
 const emptyState: AppState = { rooms: [], anchors: [], settings: {}, status: {}, baidupan: {}, auth: {}, update: {}, interaction: {}, work_pull: {}, recordings: [], recording_groups: [] };
 
 export function App() {
+  const { setColorScheme } = useMantineColorScheme();
   const [state, setState] = useState<AppState>(emptyState); const [ready, setReady] = useState(false); const [page, setPage] = useState(localStorage.getItem('liveRecorderLastView') || 'record'); const [sidebar, setSidebar] = useState(true); const [compact, setCompact] = useState(localStorage.getItem('liveRecorderCompactMode') === '1'); const [theme, setThemeState] = useState(localStorage.getItem('liveRecorderTheme') || 'dark'); const [toast, setToast] = useState<{message:string;error:boolean}>();
   const [quickAudioUrl, setQuickAudioUrl] = useState('');
   const notify = useCallback((message: string, error = false) => { setToast({message,error}); window.setTimeout(() => setToast(undefined), error ? 5200 : 3000); }, []);
   const refresh = useCallback(async () => { try { setState(await api<AppState>('/api/state')); setReady(true); } catch (e) { notify((e as Error).message, true); } }, [notify]);
   useEffect(() => { refresh(); const timer = setInterval(refresh, 4000); return () => clearInterval(timer); }, [refresh]);
-  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('liveRecorderTheme', theme); }, [theme]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('liveRecorderTheme', theme);
+    setColorScheme(['dark', 'midnight', 'forest', 'wine'].includes(theme) ? 'dark' : 'light');
+  }, [setColorScheme, theme]);
   const navigate = (value: string) => { setPage(value); localStorage.setItem('liveRecorderLastView', value); };
   const setCompactMode = async () => { const next = !compact; try { await window.liveRecorderDesktop?.setCompactMode(next); setCompact(next); localStorage.setItem('liveRecorderCompactMode', next ? '1' : '0'); if (next) navigate('interact'); } catch (e) { notify((e as Error).message, true); } };
   const quickRecord = async () => { try { await api(state.status.running ? '/api/stop' : '/api/start', state.status.running ? {} : {settings: state.settings}); await refresh(); notify(state.status.running ? '录制已停止并保存' : '录制服务已启动'); } catch (e) { notify((e as Error).message, true); } };
