@@ -229,6 +229,17 @@ def _sec_user_id(value: str) -> str:
     return ""
 
 
+def extract_douyin_share_url(value: str) -> str:
+    """Extract the actionable Douyin URL from a full mobile share message."""
+    value = str(value or "").strip()
+    urls = re.findall(r"https?://[^\s<>\"'，。；：！？、）]+", value)
+    for url in urls:
+        cleaned = url.rstrip(".,;:!?，。；：！？、）)]}")
+        if any(host in cleaned.lower() for host in ("douyin.com", "iesdouyin.com")):
+            return cleaned
+    return value
+
+
 def _nested_value(value, key: str):
     if isinstance(value, str):
         try:
@@ -775,7 +786,7 @@ def fetch_gift_rank(auth: DouyinAuthState, room_url: str) -> dict:
 
 
 def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
-    value = value.strip()
+    value = extract_douyin_share_url(value)
     if not value:
         raise ValueError("请粘贴直播间地址、用户主页或分享链接")
     if "live.douyin.com/" in value:
@@ -783,6 +794,8 @@ def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
         room_url = f"{DOUYIN_LIVE_ORIGIN}/{info.web_rid}"
         return {
             "input_type": "live_room",
+            "source_url": value,
+            "profile_url": value,
             "is_live": _is_live_status(info.status),
             "room_url": room_url,
             "web_rid": info.web_rid,
@@ -798,6 +811,8 @@ def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
         try:
             profile_result = _resolve_profile_live_room(auth, value)
             if profile_result.get("room_url"):
+                profile_result["source_url"] = value
+                profile_result["profile_url"] = f"{DOUYIN_WEB_ORIGIN}/user/{profile_result.get('sec_anchor_id') or _sec_user_id(value)}"
                 return profile_result
         except (requests.RequestException, ValueError, RuntimeError, json.JSONDecodeError):
             pass
@@ -808,25 +823,32 @@ def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
     room_url = _room_url_from_data(data, value)
     is_live = _is_live_status(data.get("status")) and bool(room_url)
     if not is_live:
+        sec_anchor_id = str(data.get("owner", {}).get("sec_uid") or "")
         return {
             "input_type": "user_profile",
+            "source_url": value,
+            "profile_url": f"{DOUYIN_WEB_ORIGIN}/user/{sec_anchor_id}" if sec_anchor_id else value,
             "is_live": False,
             "room_url": room_url,
             "web_rid": "",
             "room_id": str(data.get("id_str") or data.get("room_id") or data.get("id") or ""),
+            "sec_anchor_id": sec_anchor_id,
             "nickname": data.get("anchor_name") or data.get("owner", {}).get("nickname") or "",
             "title": data.get("title", ""),
             "message": "该用户当前未开播，或暂时无法从主页解析直播间",
         }
     web_rid = room_url.rstrip("/").rsplit("/", 1)[-1]
+    sec_anchor_id = str(data.get("owner", {}).get("sec_uid") or "")
     return {
         "input_type": "user_profile",
+        "source_url": value,
+        "profile_url": f"{DOUYIN_WEB_ORIGIN}/user/{sec_anchor_id}" if sec_anchor_id else value,
         "is_live": True,
         "room_url": room_url,
         "web_rid": web_rid,
         "room_id": str(data.get("id_str") or data.get("room_id") or data.get("id") or ""),
         "anchor_id": str(data.get("owner", {}).get("id_str") or data.get("owner", {}).get("id") or ""),
-        "sec_anchor_id": data.get("owner", {}).get("sec_uid") or "",
+        "sec_anchor_id": sec_anchor_id,
         "nickname": data.get("anchor_name") or data.get("owner", {}).get("nickname") or "",
         "title": data.get("title", ""),
         "message": "已解析到直播间地址",

@@ -371,6 +371,15 @@ def make_handler(state: AppState, token: str):
                         str(body.get("profile_url", "")),
                         str(body.get("live_url", "")),
                     )
+                    resolved_fields = {
+                        "sec_user_id": body.get("sec_user_id", ""),
+                        "web_rid": body.get("web_rid", ""),
+                        "room_id": body.get("room_id", ""),
+                        "last_live_status": body.get("last_live_status", "unknown"),
+                        "last_resolved_at": body.get("last_resolved_at"),
+                    }
+                    if any(value not in (None, "", "unknown") for value in resolved_fields.values()):
+                        anchor = state.anchors.update(anchor["id"], resolved_fields)
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()}, HTTPStatus.CREATED)
                 elif path == "/api/anchors/search":

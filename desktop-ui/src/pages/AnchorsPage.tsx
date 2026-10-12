@@ -1,5 +1,5 @@
 import { Accordion, Badge, Button, Group, Select, Switch, Table, Text, TextInput, Textarea } from '@mantine/core';
-import { Database, FolderOpen, Radio, RefreshCw, Search, Sheet, UserPlus } from 'lucide-react';
+import { CheckCircle2, Database, FolderOpen, Link2, Radio, RefreshCw, Search, Sheet, UserPlus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { Empty, FieldGrid, PageGrid, Panel, StatusBadge } from '../components';
@@ -10,13 +10,32 @@ export function AnchorsPage({ state, refresh, notify, navigate }: { state: AppSt
   const [query, setQuery] = useState(''); const [status, setStatus] = useState<string | null>('all');
   const [discover, setDiscover] = useState(''); const [results, setResults] = useState<any[]>([]); const [searching, setSearching] = useState(false);
   const [name, setName] = useState(''); const [profile, setProfile] = useState(''); const [live, setLive] = useState('');
+  const [preview, setPreview] = useState<any>(); const [resolving, setResolving] = useState(false);
   const [collectionMode, setCollectionMode] = useState(false);
   const selected = state.anchors.find(a => a.id === selectedId);
   useEffect(() => { if (!selectedId && state.anchors[0]) setSelectedId(state.anchors[0].id); }, [selectedId, state.anchors]);
   const filtered = useMemo(() => state.anchors.filter(a => (status === 'all' || (a.last_live_status || 'unknown') === status) && (!query || [a.name, a.profile_url, a.live_url].some(v => String(v || '').toLowerCase().includes(query.toLowerCase())))), [state.anchors, query, status]);
   const run = async (fn: () => Promise<any>, message: string) => { try { await fn(); await refresh(); notify(message); } catch (e) { notify((e as Error).message, true); } };
   const search = async () => { if (!discover.trim()) return notify('请输入主播昵称或抖音号', true); setSearching(true); try { const data = await api<any>('/api/anchors/search', { keyword: discover, limit: 12 }); setResults(data.users || []); if (!data.users?.length) notify('没有找到匹配主播'); } catch (e) { notify((e as Error).message, true); } finally { setSearching(false); } };
-  const add = (payload = { name, profile_url: profile, live_url: live }) => run(async () => { await api('/api/anchors', payload); setName(''); setProfile(''); setLive(''); }, `已添加 ${payload.name || '主播'}`);
+  const add = (payload: Record<string, any> = { name, profile_url: profile, live_url: live }) => run(async () => { await api('/api/anchors', payload); setName(''); setProfile(''); setLive(''); setPreview(undefined); }, `已添加 ${payload.name || '主播'}`);
+  const resolveShare = async () => {
+    if (!profile.trim()) return notify('请粘贴手机端主页分享文案或链接', true);
+    setResolving(true); setPreview(undefined);
+    try {
+      const data = await api<any>('/api/douyin/resolve-live-room', { url: profile });
+      const result = data.live_room;
+      setPreview(result);
+      if (result.nickname) setName(result.nickname);
+      if (result.room_url) setLive(result.room_url);
+    } catch (e) { notify((e as Error).message, true); }
+    finally { setResolving(false); }
+  };
+  const addResolved = () => {
+    if (!preview) return add();
+    add({ name: name || preview.nickname || '未命名主播', profile_url: preview.profile_url || preview.source_url || profile,
+      live_url: preview.room_url || live, sec_user_id: preview.sec_anchor_id || '', web_rid: preview.web_rid || '', room_id: preview.room_id || '',
+      last_live_status: preview.is_live ? 'live' : 'offline', last_resolved_at: Math.floor(Date.now() / 1000) });
+  };
   if (collectionMode) return <CollectionEditor anchors={state.anchors} recording={!!state.status?.running} close={() => setCollectionMode(false)} refresh={refresh} notify={notify} />;
   return <PageGrid>
     <div className="column">
@@ -34,8 +53,12 @@ export function AnchorsPage({ state, refresh, notify, navigate }: { state: AppSt
       <Panel title={selected ? `${selected.name} · 数据编辑器` : '主播数据编辑器'} badge={selected ? <StatusBadge value={selected.last_live_status} /> : undefined}>
         {selected ? <AnchorEditor key={selected.id} anchor={selected} run={run} notify={notify} navigate={navigate} /> : <Empty>从左侧选择主播后修改完整资料</Empty>}
       </Panel>
-      <Panel title="手动添加" badge={<UserPlus size={17} />}>
-        <FieldGrid><TextInput label="主播名称（可选）" value={name} onChange={e => setName(e.currentTarget.value)} /><TextInput className="wide" label="主页 / 分享 / 直播间地址" value={profile} onChange={e => setProfile(e.currentTarget.value)} /><TextInput className="wide" label="备用直播间地址（可选）" value={live} onChange={e => setLive(e.currentTarget.value)} /></FieldGrid><Button mt="md" onClick={() => add()}>添加主播</Button>
+      <Panel title="粘贴手机分享" badge={<UserPlus size={17} />}>
+        <Text size="sm" c="dimmed" mb="sm">把手机端“分享主页”复制出的整段文案直接粘贴到这里，系统会自动提取链接并识别主播。</Text>
+        <Textarea label="主页分享文案或链接" value={profile} onChange={e => { setProfile(e.currentTarget.value); setPreview(undefined); }} autosize minRows={2} placeholder="例如：复制此链接，打开抖音搜索…… https://v.douyin.com/xxxx/" />
+        <Group mt="sm"><Button loading={resolving} leftSection={<Link2 size={16}/>} onClick={resolveShare}>解析主播</Button><Button variant="subtle" disabled={!profile.trim()} onClick={() => { setName(''); setProfile(''); setLive(''); setPreview(undefined); }}>清空</Button></Group>
+        {preview && <div className="sharePreview"><Group justify="space-between" align="flex-start"><Group gap="sm"><div className="avatar">{String(preview.nickname || '主').slice(0, 1)}</div><div><Group gap="xs"><Text fw={750}>{preview.nickname || '已识别主播'}</Text><Badge color={preview.is_live ? 'green' : 'orange'} variant="light">{preview.is_live ? '正在直播' : '当前未开播'}</Badge></Group><Text size="xs" c="dimmed">{preview.message}</Text>{preview.room_url && <Text size="xs" c="dimmed">直播间：{preview.room_url}</Text>}</div></Group><CheckCircle2 size={20} color="var(--accent)" /></Group><FieldGrid><TextInput label="主播名称" value={name} onChange={e => setName(e.currentTarget.value)} /><TextInput label="直播间地址" value={live} onChange={e => setLive(e.currentTarget.value)} /></FieldGrid><Button mt="md" onClick={addResolved}>确认加入主播库</Button></div>}
+        {!preview && <Button mt="md" variant="light" disabled={!profile.trim() || resolving} onClick={() => add()}>暂不解析，直接保存</Button>}
       </Panel>
     </div>
   </PageGrid>;

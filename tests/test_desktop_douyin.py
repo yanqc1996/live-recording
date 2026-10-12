@@ -9,6 +9,7 @@ from desktop_douyin import (
     LiveRoomInfo,
     _audio_relay_command,
     _decode_live_response,
+    extract_douyin_share_url,
     fetch_live_room_info,
     resolve_live_room,
     search_douyin_users,
@@ -37,6 +38,13 @@ class FakeResponse:
 
 
 class DouyinProfileResolverTest(unittest.TestCase):
+    def test_extracts_short_url_from_mobile_share_text(self):
+        text = "复制此链接，打开抖音搜索 https://v.douyin.com/AbCd12/ 8@1.com"
+        self.assertEqual("https://v.douyin.com/AbCd12/", extract_douyin_share_url(text))
+
+    def test_extracts_url_without_trailing_chinese_punctuation(self):
+        self.assertEqual(PROFILE_URL, extract_douyin_share_url(f"分享主播主页：{PROFILE_URL}，欢迎关注"))
+
     @patch("desktop_douyin.requests.get")
     def test_offline_profile_still_returns_stable_live_url(self, request_get):
         request_get.return_value = FakeResponse(
