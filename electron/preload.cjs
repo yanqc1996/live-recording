@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('liveRecorderDesktop', {
   platform: process.platform,
+  getBackgroundSettings: () => ipcRenderer.invoke('background:get-settings'),
+  saveBackgroundSettings: (settings) => ipcRenderer.invoke('background:save-settings', settings),
   loginDouyin: () => ipcRenderer.invoke('douyin:login'),
   importDouyinCookie: (cookie) => ipcRenderer.invoke('douyin:import-cookie', cookie),
   logoutDouyin: () => ipcRenderer.invoke('douyin:logout'),

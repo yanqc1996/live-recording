@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, screen, session, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, powerMonitor, powerSaveBlocker, screen, session, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,6 +24,80 @@ let windowStateTimer = null;
 let tray = null;
 let trayRefreshTimer = null;
 let trayState = null;
+let powerBlockerId = null;
+
+const BACKGROUND_DEFAULTS = {
+  open_at_login: false,
+  launch_hidden: true,
+  auto_start_recording: false,
+  prevent_sleep_when_active: true,
+  notify_recording: false,
+  notify_upload: false,
+  notify_errors: false
+};
+
+function backgroundSettingsPath() {
+  return path.join(app.getPath('userData'), 'background-settings.json');
+}
+
+function loadBackgroundSettings() {
+  try {
+    const value = JSON.parse(fs.readFileSync(backgroundSettingsPath(), 'utf8'));
+    return { ...BACKGROUND_DEFAULTS, ...(value && typeof value === 'object' ? value : {}) };
+  } catch {
+    return { ...BACKGROUND_DEFAULTS };
+  }
+}
+
+function applyLoginItemSettings(settings) {
+  if (process.platform !== 'darwin') return;
+  app.setLoginItemSettings({
+    openAtLogin: Boolean(settings.open_at_login),
+    openAsHidden: Boolean(settings.launch_hidden),
+    args: settings.launch_hidden ? ['--background'] : []
+  });
+}
+
+function saveBackgroundSettings(supplied) {
+  const current = loadBackgroundSettings();
+  const settings = { ...current };
+  for (const key of Object.keys(BACKGROUND_DEFAULTS)) {
+    if (key in supplied) settings[key] = Boolean(supplied[key]);
+  }
+  const temporary = `${backgroundSettingsPath()}.tmp`;
+  fs.mkdirSync(path.dirname(backgroundSettingsPath()), { recursive: true });
+  fs.writeFileSync(temporary, JSON.stringify(settings, null, 2), 'utf8');
+  fs.renameSync(temporary, backgroundSettingsPath());
+  applyLoginItemSettings(settings);
+  updatePowerBlocker(trayState);
+  return settings;
+}
+
+function shouldLaunchHidden() {
+  if (!loadBackgroundSettings().launch_hidden) return false;
+  const login = process.platform === 'darwin' ? app.getLoginItemSettings() : {};
+  return process.argv.includes('--background') || Boolean(login.wasOpenedAtLogin || login.wasOpenedAsHidden);
+}
+
+function updatePowerBlocker(state) {
+  const settings = loadBackgroundSettings();
+  const uploads = state?.baidupan || {};
+  const interaction = state?.interaction || {};
+  const active = Boolean(
+    state?.status?.running ||
+    interaction.listening ||
+    interaction.audio_playing ||
+    Number(uploads.pending || 0) > 0
+  );
+  if (settings.prevent_sleep_when_active && active) {
+    if (powerBlockerId == null || !powerSaveBlocker.isStarted(powerBlockerId)) {
+      powerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    }
+  } else if (powerBlockerId != null && powerSaveBlocker.isStarted(powerBlockerId)) {
+    powerSaveBlocker.stop(powerBlockerId);
+    powerBlockerId = null;
+  }
+}
 
 function windowStatePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
@@ -217,6 +291,16 @@ async function backendState() {
   return response.json();
 }
 
+async function ensureAutomaticRecording() {
+  const settings = loadBackgroundSettings();
+  if (!settings.auto_start_recording) return false;
+  const state = await backendState();
+  if (state.status?.running) return true;
+  if (!(state.rooms || []).some((room) => room.active)) throw new Error('自动录制已开启，但没有启用的直播间');
+  await postBackend('/api/start', { settings: state.settings || {} });
+  return true;
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -279,6 +363,7 @@ async function refreshTray() {
   } catch {
     trayState = null;
   }
+  updatePowerBlocker(trayState);
   rebuildTrayMenu();
 }
 
@@ -510,6 +595,16 @@ async function importDouyinCookie(rawCookie) {
 }
 
 function registerIpc() {
+  ipcMain.handle('background:get-settings', (event) => {
+    validateMainSender(event);
+    const settings = loadBackgroundSettings();
+    const login = process.platform === 'darwin' ? app.getLoginItemSettings() : {};
+    return { ...settings, open_at_login: Boolean(login.openAtLogin) };
+  });
+  ipcMain.handle('background:save-settings', (event, supplied) => {
+    validateMainSender(event);
+    return saveBackgroundSettings(supplied && typeof supplied === 'object' ? supplied : {});
+  });
   ipcMain.handle('douyin:login', (event) => {
     validateMainSender(event);
     createLoginWindow();
@@ -566,7 +661,8 @@ function registerIpc() {
   });
 }
 
-function createMainWindow() {
+async function createMainWindow() {
+  const launchHidden = shouldLaunchHidden();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -574,6 +670,7 @@ function createMainWindow() {
     minHeight: 680,
     title: '播录助手',
     backgroundColor: '#0b0d11',
+    show: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -607,7 +704,9 @@ function createMainWindow() {
     if (url !== backendUrl) event.preventDefault();
   });
   mainWindow.on('closed', () => { mainWindow = null; });
-  return mainWindow.loadURL(backendUrl);
+  await mainWindow.loadURL(backendUrl);
+  if (!launchHidden) mainWindow.show();
+  return mainWindow;
 }
 
 const lock = app.requestSingleInstanceLock();
@@ -619,15 +718,23 @@ else {
   app.whenReady().then(async () => {
     registerIpc();
     try {
+      applyLoginItemSettings(loadBackgroundSettings());
       await startBackend();
       await createMainWindow();
       await syncDouyinSession();
       createTray();
+      ensureAutomaticRecording().catch((error) => console.error(`自动开始录制失败：${error.message}`));
     } catch (error) {
       console.error(error);
       dialog.showErrorBox('播录助手启动失败', error.message);
       app.quit();
     }
+    powerMonitor.on('resume', () => {
+      setTimeout(() => {
+        ensureAutomaticRecording().catch((error) => console.error(`唤醒后恢复录制失败：${error.message}`));
+        refreshTray().catch(() => {});
+      }, 2500);
+    });
     app.on('activate', () => {
       if (!mainWindow) createMainWindow();
       else showMainWindow();
@@ -682,6 +789,7 @@ app.on('before-quit', (event) => {
     }
     quitting = true;
     if (trayRefreshTimer) clearInterval(trayRefreshTimer);
+    if (powerBlockerId != null && powerSaveBlocker.isStarted(powerBlockerId)) powerSaveBlocker.stop(powerBlockerId);
     app.quit();
   })().catch((error) => {
     console.error(error);
