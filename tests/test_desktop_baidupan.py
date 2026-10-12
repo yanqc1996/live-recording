@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,37 @@ from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_reconcile_enqueues_stable_untracked_recordings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "anchor_000.ts"
+            video.write_bytes(b"video")
+            old = time.time() - 600
+            manager = BaiduPanUploadManager(root, root)
+            result = manager.reconcile_files([{
+                "anchor": "主播",
+                "latest_modified": old,
+                "files": [{"path": str(video), "modified": old}],
+            }], enqueue=True)
+
+            self.assertEqual(result["added"], 1)
+            self.assertEqual(manager._load_queue()[0]["save_file_path"], str(video))
+
+    def test_reconcile_does_not_enqueue_active_recording_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "anchor_000.ts"
+            video.write_bytes(b"video")
+            manager = BaiduPanUploadManager(root, root)
+            result = manager.reconcile_files([{
+                "anchor": "主播",
+                "latest_modified": time.time(),
+                "files": [{"path": str(video), "modified": time.time()}],
+            }], enqueue=True)
+
+            self.assertEqual(result["added"], 0)
+            self.assertEqual(manager._load_queue(), [])
+
     def test_verified_upload_cleanup_is_enabled_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

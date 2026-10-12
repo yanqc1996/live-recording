@@ -121,6 +121,7 @@ class AppState:
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
+        self._last_upload_reconcile = 0.0
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -216,6 +217,14 @@ class AppState:
     def recording_archive_groups(self) -> list[dict]:
         return group_recordings(scan_recordings(self.output_path(), limit=None))
 
+    def maybe_reconcile_uploads(self) -> None:
+        config = self.uploads.load_config()
+        now = time.time()
+        if not (config.get("enabled") and config.get("auto_upload")) or now - self._last_upload_reconcile < 60:
+            return
+        self._last_upload_reconcile = now
+        self.uploads.reconcile_files(self.recording_archive_groups(), enqueue=True)
+
     def output_path(self) -> Path:
         configured = self.settings.load()["output_path"]
         return Path(configured) if configured else PROJECT_ROOT / "downloads"
@@ -275,6 +284,7 @@ def make_handler(state: AppState, token: str):
                     self.end_headers()
                     self.wfile.write(body)
                 elif path == "/api/state":
+                    state.maybe_reconcile_uploads()
                     recordings = state.recordings()
                     self._json({
                         "rooms": state.rooms.list(),
@@ -331,7 +341,13 @@ def make_handler(state: AppState, token: str):
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
                     self._json(state.uploads.logs_snapshot(cursor))
                 elif path == "/api/media-library":
-                    self._json({"library": state.media_library()})
+                    library = state.media_library()
+                    reconciliation = state.uploads.reconcile_files(state.recording_archive_groups())
+                    statuses = {item["path"]: item["status"] for item in reconciliation["files"]}
+                    for anchor in library.get("anchors", []):
+                        for item in anchor.get("files", []):
+                            item["upload_status"] = statuses.get(item["path"], "untracked") if item.get("source") == "recording" else "not_applicable"
+                    self._json({"library": library, "upload_reconciliation": reconciliation})
                 elif path == "/api/anchors":
                     self._json({"anchors": state.anchors.list()})
                 else:
@@ -479,6 +495,8 @@ def make_handler(state: AppState, token: str):
                     self._json({"item": item, "baidupan": state.uploads.status()}, HTTPStatus.CREATED)
                 elif path == "/api/baidupan/enqueue-archive":
                     self._json(state.uploads.enqueue_archive(state.recording_archive_groups()), HTTPStatus.CREATED)
+                elif path == "/api/baidupan/reconcile":
+                    self._json(state.uploads.reconcile_files(state.recording_archive_groups(), enqueue=True), HTTPStatus.CREATED)
                 elif len(parts) == 4 and parts[:2] == ["api", "baidupan"] and parts[3] == "retry":
                     item = state.uploads.retry(parts[2])
                     self._json({"item": item, "baidupan": state.uploads.status()})

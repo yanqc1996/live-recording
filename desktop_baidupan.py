@@ -75,6 +75,7 @@ class BaiduPanUploadManager:
         self.on_log = on_log
         self.config_path = project_root / "config" / "baidupan_upload.json"
         self.queue_path = project_root / "config" / "baidupan_queue.json"
+        self.history_path = project_root / "config" / "baidupan_history.json"
         self.logs: deque[str] = deque(maxlen=800)
         self._log_offset = 0
         self._lock = threading.RLock()
@@ -165,6 +166,37 @@ class BaiduPanUploadManager:
 
     def _save_queue(self, queue: list[dict]) -> None:
         _atomic_json(self.queue_path, queue)
+
+    def _load_history(self) -> dict:
+        try:
+            data = json.loads(self.history_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def reconcile_files(self, groups: list[dict], enqueue: bool = False) -> dict:
+        queue = self._load_queue()
+        history = self._load_history()
+        by_path = {}
+        for item in queue:
+            for value in item.get("uploaded_files") or [item.get("save_file_path")]:
+                if value:
+                    by_path[str(Path(value))] = item
+        files = []
+        added = 0
+        now = time.time()
+        for group in groups:
+            anchor = str(group.get("anchor") or "历史录像")
+            group_active = now - float(group.get("latest_modified") or 0) < 300
+            for file_item in group.get("files") or []:
+                path = str(Path(str(file_item.get("path") or "")))
+                item = by_path.get(path)
+                status = str(item.get("status")) if item else ("success" if path in history else "untracked")
+                files.append({"path": path, "status": status, "item_id": item.get("id") if item else ""})
+                if enqueue and status == "untracked" and not group_active:
+                    self.enqueue_recording(path, record_name=anchor, save_type=Path(path).suffix.lstrip(".").upper(), source="reconcile")
+                    added += 1
+        return {"files": files, "counts": {key: sum(f["status"] == key for f in files) for key in ("untracked", "pending", "uploading", "success", "failed", "paused")}, "added": added}
 
     def status(self) -> dict:
         self._cleanup_uploaded_files()
@@ -563,6 +595,10 @@ class BaiduPanUploadManager:
                     item["remote_verified"] = bool(remote_verified)
                     if uploaded_files:
                         item["uploaded_files"] = list(dict.fromkeys(uploaded_files))
+                        history = self._load_history()
+                        for value in uploaded_files:
+                            history[str(Path(value))] = {"uploaded_at": int(time.time()), "remote_dir": item.get("remote_dir", "")}
+                        _atomic_json(self.history_path, history)
                     break
             self._save_queue(queue)
 
