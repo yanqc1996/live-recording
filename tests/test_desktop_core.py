@@ -73,6 +73,24 @@ class AnchorStoreTest(unittest.TestCase):
             self.assertEqual(0, store.import_rooms([{"value": "https://live.douyin.com/123,主播: 小王", "active": False}]))
             self.assertFalse(store.list()[0]["enabled_recording"])
 
+    def test_legacy_room_with_decorated_duplicate_name_is_not_imported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            store.add(
+                "在下旺旺雪饼🫓",
+                "https://www.douyin.com/user/current",
+                "https://live.douyin.com/current",
+            )
+
+            imported = store.import_rooms([{
+                "value": "https://live.douyin.com/old,主播: 在下旺旺雪饼",
+                "active": True,
+            }])
+
+            self.assertEqual(0, imported)
+            self.assertEqual(1, len(store.list()))
+            self.assertEqual("https://live.douyin.com/current", store.list()[0]["live_url"])
+
 
 class RoomStoreTest(unittest.TestCase):
     def test_add_toggle_and_delete_preserves_other_lines(self):

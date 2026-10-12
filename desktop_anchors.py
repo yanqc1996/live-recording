@@ -7,6 +7,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,6 +18,12 @@ def _atomic_json_write(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _normalized_anchor_name(value: str) -> str:
+    """Normalize display-name decoration for conservative legacy deduplication."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in normalized if character.isalnum())
 
 
 class AnchorStore:
@@ -91,11 +98,15 @@ class AnchorStore:
         with self._lock:
             data = self._load()
             known = {}
+            known_names = {}
             for anchor in data["anchors"]:
                 for key in ("profile_url", "live_url"):
                     value = str(anchor.get(key) or "").strip().split("?")[0]
                     if value:
                         known[value] = anchor
+                normalized_name = _normalized_anchor_name(anchor.get("name", ""))
+                if normalized_name:
+                    known_names[normalized_name] = anchor
             now = int(time.time())
             for room in rooms:
                 value = str(room.get("value") or "")
@@ -103,6 +114,9 @@ class AnchorStore:
                 if not match:
                     continue
                 url = match.group(0).split("?")[0]
+                name_match = re.search(r"主播\s*[:：]\s*([^,，]+)", value)
+                imported_name = name_match.group(1).strip() if name_match else ""
+                name_key = _normalized_anchor_name(imported_name)
                 if url in known:
                     active = bool(room.get("active", True))
                     if known[url].get("enabled_recording", True) != active:
@@ -110,11 +124,14 @@ class AnchorStore:
                         known[url]["updated_at"] = now
                         changed = True
                     continue
-                name_match = re.search(r"主播\s*[:：]\s*([^,，]+)", value)
+                if name_key and name_key in known_names:
+                    # A legacy room URL can become stale while the canonical profile
+                    # already contains the same decorated display name and a newer URL.
+                    continue
                 fallback = urlparse(url).netloc or "未命名主播"
                 data["anchors"].append({
                     "id": uuid.uuid4().hex,
-                    "name": name_match.group(1).strip() if name_match else fallback,
+                    "name": imported_name or fallback,
                     "profile_url": url,
                     "sec_user_id": "",
                     "live_url": url if "live.douyin.com/" in url else "",
@@ -129,6 +146,8 @@ class AnchorStore:
                     "updated_at": now,
                 })
                 known[url] = data["anchors"][-1]
+                if name_key:
+                    known_names[name_key] = data["anchors"][-1]
                 imported += 1
             if imported or changed:
                 self._save(data)
