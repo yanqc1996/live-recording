@@ -142,6 +142,27 @@ class RoomStore:
             lines[position] = value if active else f"#{value}"
             _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
 
+    def replace_all(self, rooms: list[dict]) -> list[dict]:
+        """Replace all editable recording entries while preserving comments and settings."""
+        with self._lock:
+            lines = self._all_lines()
+            positions = self._editable_positions(lines)
+            if len(rooms) != len(positions):
+                raise ValueError("录制主播集合已发生变化，请刷新后重试")
+            ids = [int(room.get("id", -1)) for room in rooms]
+            if sorted(ids) != list(range(len(positions))):
+                raise ValueError("录制主播集合序号不匹配，请刷新后重试")
+            ordered = sorted(rooms, key=lambda room: int(room.get("id", -1)))
+            values = [str(room.get("value", "")).strip() for room in ordered]
+            if any(not re.search(r"https?://[^\s]+", value) for value in values):
+                raise ValueError("每条录制数据都必须包含有效的直播间地址")
+            if len(values) != len(set(values)):
+                raise ValueError("录制主播集合中存在重复数据")
+            for position, room, value in zip(positions, ordered, values):
+                lines[position] = value if bool(room.get("active", True)) else f"#{value}"
+            _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
+            return self.list()
+
     def delete(self, room_id: int) -> None:
         with self._lock:
             lines = self._all_lines()

@@ -27,11 +27,21 @@ class AnchorStoreTest(unittest.TestCase):
                 "profile_url": "https://www.douyin.com/user/new",
                 "live_url": "https://live.douyin.com/123?source=edit",
                 "default_quality": "高清",
+                "sec_user_id": "  SEC-123  ",
+                "web_rid": " room-web ",
+                "room_id": " 98765 ",
+                "output_dir": " /tmp/主播 ",
+                "enabled_recording": False,
             })
 
             self.assertEqual("新名称", updated["name"])
             self.assertEqual("https://live.douyin.com/123", updated["live_url"])
             self.assertEqual("高清", updated["default_quality"])
+            self.assertEqual("SEC-123", updated["sec_user_id"])
+            self.assertEqual("room-web", updated["web_rid"])
+            self.assertEqual("98765", updated["room_id"])
+            self.assertEqual("/tmp/主播", updated["output_dir"])
+            self.assertFalse(updated["enabled_recording"])
 
     def test_edit_rejects_duplicate_profile_url(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,6 +66,23 @@ class RoomStoreTest(unittest.TestCase):
             store.delete(1)
             self.assertIn("# note", path.read_text(encoding="utf-8-sig"))
             self.assertNotIn("other.test", path.read_text(encoding="utf-8-sig"))
+
+    def test_bulk_edit_recording_collection_preserves_comments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "URL_config.ini"
+            path.write_text("## keep this\nhttps://live.douyin.com/1,主播: 甲\n#https://live.douyin.com/2,主播: 乙\n", encoding="utf-8-sig")
+            store = RoomStore(path)
+
+            rooms = store.replace_all([
+                {"id": 0, "value": "https://live.douyin.com/1,主播: 新甲", "active": False},
+                {"id": 1, "value": "https://live.douyin.com/2,主播: 新乙", "active": True},
+            ])
+
+            self.assertEqual([False, True], [room["active"] for room in rooms])
+            content = path.read_text(encoding="utf-8-sig")
+            self.assertIn("## keep this", content)
+            self.assertIn("#https://live.douyin.com/1,主播: 新甲", content)
+            self.assertIn("https://live.douyin.com/2,主播: 新乙", content)
 
 
 class SettingsStoreTest(unittest.TestCase):

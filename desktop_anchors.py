@@ -109,6 +109,9 @@ class AnchorStore:
                 cleaned["live_url"] = str(cleaned["live_url"] or "").strip().split("?")[0]
                 if cleaned["live_url"] and "live.douyin.com/" not in cleaned["live_url"]:
                     raise ValueError("直播间地址必须是 live.douyin.com 链接")
+            for key in ("sec_user_id", "web_rid", "room_id", "output_dir"):
+                if key in cleaned:
+                    cleaned[key] = str(cleaned[key] or "").strip()
             for anchor in data["anchors"]:
                 if anchor.get("id") == anchor_id:
                     anchor.update(cleaned)

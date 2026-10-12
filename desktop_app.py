@@ -336,12 +336,37 @@ def make_handler(state: AppState, token: str):
                     self._json({"anchor": anchor, "anchors": state.anchors.list()}, HTTPStatus.CREATED)
                 elif path == "/api/anchors/search":
                     self._json(state.interaction.search_users(str(body.get("keyword", "")), int(body.get("limit", 12))))
+                elif path == "/api/anchors/bulk":
+                    items = body.get("anchors") or []
+                    if not isinstance(items, list) or len(items) > 2000:
+                        raise ValueError("主播集合数据格式不正确")
+                    profiles = [str(item.get("profile_url", "")).strip() for item in items if isinstance(item, dict)]
+                    if len(profiles) != len(items) or any(not profile for profile in profiles):
+                        raise ValueError("每位主播都必须保留主页、分享链接或直播间地址")
+                    if len(profiles) != len(set(profiles)):
+                        raise ValueError("主播集合中存在重复的主页地址，请修改后再保存")
+                    existing_ids = {str(anchor.get("id")) for anchor in state.anchors.list()}
+                    if {str(item.get("id")) for item in items} != existing_ids:
+                        raise ValueError("主播集合已发生变化，请返回主播库刷新后重试")
+                    for item in items:
+                        state.anchors.update(str(item.get("id")), {
+                            "name": item.get("name", ""), "profile_url": item.get("profile_url", ""),
+                            "sec_user_id": item.get("sec_user_id", ""), "live_url": item.get("live_url", ""),
+                            "web_rid": item.get("web_rid", ""), "room_id": item.get("room_id", ""),
+                            "default_quality": item.get("default_quality", "原画"), "output_dir": item.get("output_dir", ""),
+                            "enabled_recording": bool(item.get("enabled_recording", True)),
+                        })
+                    self._json({"anchors": state.anchors.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
                     anchor = state.anchors.update(parts[2], {
                         "name": body.get("name", ""),
                         "profile_url": body.get("profile_url", ""),
+                        "sec_user_id": body.get("sec_user_id", ""),
                         "live_url": body.get("live_url", ""),
+                        "web_rid": body.get("web_rid", ""),
+                        "room_id": body.get("room_id", ""),
                         "default_quality": body.get("default_quality", "原画"),
+                        "output_dir": body.get("output_dir", ""),
                         "enabled_recording": bool(body.get("enabled_recording", True)),
                     })
                     self._json({"anchor": anchor, "anchors": state.anchors.list()})
@@ -393,6 +418,13 @@ def make_handler(state: AppState, token: str):
                     self._json({"anchor": anchor, "room": room, "rooms": state.rooms.list(), "live_room": live_room})
                 elif path == "/api/anchors/check-live":
                     self._json(state.check_anchors_live_status())
+                elif path == "/api/rooms/bulk":
+                    if state.recorder.is_running:
+                        raise RuntimeError("录制期间不可批量修改主播集合，请先停止并保存")
+                    rooms = body.get("rooms") or []
+                    if not isinstance(rooms, list) or len(rooms) > 2000:
+                        raise ValueError("录制主播集合格式不正确")
+                    self._json({"rooms": state.rooms.replace_all(rooms)})
                 elif len(parts) == 3 and parts[:2] == ["api", "rooms"]:
                     if state.recorder.is_running:
                         raise RuntimeError("录制期间不可启用或暂停直播间，请先停止并保存")
