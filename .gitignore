@@ -13,6 +13,7 @@ develop-eggs/
 dist/
 downloads/
 node_modules/
+desktop/ui-dist/
 release/*
 !release/update.json
 !release/update.example.json

@@ -27,7 +27,7 @@ from desktop_work_pull import WorkPullManager
 
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 PROJECT_ROOT = Path(os.environ.get("LIVERECORDER_DATA_ROOT", Path(__file__).resolve().parent)).resolve()
-STATIC_FILE = BUNDLE_ROOT / "desktop" / "index.html"
+STATIC_FILE = BUNDLE_ROOT / "desktop" / "ui-dist" / "index.html"
 APP_VERSION = os.environ.get("BOLU_APP_VERSION") or os.environ.get("npm_package_version") or "0.1.0"
 BUILD_COMMIT = os.environ.get("BOLU_BUILD_COMMIT", "").strip()
 
@@ -539,7 +539,7 @@ def main() -> None:
     if args.host not in {"127.0.0.1", "localhost"}:
         parser.error("桌面控制台仅允许监听本机地址")
     if not STATIC_FILE.exists():
-        parser.error(f"缺少界面文件：{STATIC_FILE}")
+        parser.error(f"缺少 React 界面构建产物：{STATIC_FILE}，请先运行 npm run ui:build")
 
     token = secrets.token_urlsafe(24)
     state = AppState()

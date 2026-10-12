@@ -1,0 +1,19 @@
+export type Room = { id: number; value: string; active: boolean };
+export type Anchor = { id: string; name: string; profile_url: string; live_url: string; sec_user_id?: string; default_quality?: string; enabled_recording?: boolean; last_live_status?: string; last_resolved_at?: number; last_check_error?: string };
+export type AppState = { rooms: Room[]; anchors: Anchor[]; settings: Record<string, any>; status: Record<string, any>; baidupan: Record<string, any>; auth: Record<string, any>; update: Record<string, any>; interaction: Record<string, any>; work_pull: Record<string, any>; recordings: any[]; recording_groups: any[] };
+export type DesktopBridge = {
+  platform: string;
+  getBackgroundSettings(): Promise<Record<string, any>>;
+  saveBackgroundSettings(value: Record<string, any>): Promise<Record<string, any>>;
+  loginDouyin(): Promise<any>;
+  importDouyinCookie(cookie: string): Promise<any>;
+  logoutDouyin(): Promise<any>;
+  getDouyinStatus(): Promise<any>;
+  refreshDouyinSecurity(roomUrl: string): Promise<any>;
+  chooseOutputDirectory(): Promise<string>;
+  openExternal(url: string): Promise<void>;
+  setCompactMode(enabled: boolean): Promise<any>;
+  onDouyinStatusChanged(callback: (status: any) => void): () => void;
+};
+
+declare global { interface Window { liveRecorderDesktop?: DesktopBridge } }

@@ -1,0 +1,48 @@
+import { ActionIcon, Button, Group, Switch, Text, TextInput, Tooltip } from '@mantine/core';
+import { FolderOpen, Plus, Square, Trash2, Video } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { api } from '../api';
+import { Empty, PageGrid, Panel, StatusBadge, formatBytes, roomLabel, roomUrl } from '../components';
+import type { AppState, Room } from '../types';
+
+export function DashboardPage({ state, refresh, notify }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void }) {
+  const [room, setRoom] = useState('');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [cursor, setCursor] = useState(0);
+  const [detailed, setDetailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const running = !!state.status?.running;
+  useEffect(() => { setCursor(0); setLogs([]); }, [detailed]);
+  useEffect(() => {
+    const poll = async () => { try { const data = await api<any>(`/api/logs?cursor=${cursor}&detail=${detailed ? 1 : 0}`); if (data.lines?.length) setLogs(value => [...value, ...data.lines].slice(-1000)); setCursor(data.cursor || 0); } catch {} };
+    poll(); const timer = window.setInterval(poll, 1000); return () => clearInterval(timer);
+  }, [cursor, detailed]);
+  const act = async (fn: () => Promise<any>, message: string) => { setBusy(true); try { await fn(); await refresh(); notify(message); } catch (e) { notify((e as Error).message, true); } finally { setBusy(false); } };
+  const addRoom = () => act(async () => { await api('/api/rooms', { value: room }); setRoom(''); }, '直播间已添加');
+  const toggle = (item: Room, active: boolean) => act(() => api(`/api/rooms/${item.id}`, { active }), active ? '直播间已启用' : '直播间已暂停');
+  const remove = (item: Room) => { if (confirm(`确定删除 ${roomLabel(item.value)} 吗？`)) act(() => api(`/api/rooms/${item.id}`, undefined, 'DELETE'), '直播间已删除'); };
+  const recordings = state.recording_groups || [];
+  return <PageGrid>
+    <div className="column">
+      <Panel title="直播间" badge={<Text c="dimmed" size="sm">{state.rooms.filter(r => r.active).length} / {state.rooms.length} 已启用</Text>}>
+        <div className="list">{state.rooms.length ? state.rooms.map(item => <div className="listRow" key={item.id}>
+          <Switch checked={item.active} disabled={running || busy} onChange={e => toggle(item, e.currentTarget.checked)} />
+          <div className="grow"><Group gap="xs"><Text fw={700}>{roomLabel(item.value)}</Text><StatusBadge value={!item.active ? 'paused' : running ? 'recording' : 'pending'} /></Group><Text size="xs" c="dimmed" truncate>{roomUrl(item.value)}</Text></div>
+          <Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>
+        </div>) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
+        <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址" leftSection={<Plus size={16} />} flex={1} /><Button onClick={addRoom}>添加</Button></Group>
+      </Panel>
+      <Panel title="运行日志" actions={<Group gap="xs"><Button size="xs" variant="subtle" onClick={() => setDetailed(v => !v)}>{detailed ? '只看关键节点' : '显示详细日志'}</Button><Button size="xs" variant="subtle" onClick={() => setLogs([])}>清空</Button></Group>}>
+        <pre className="logBox">{logs.length ? logs.join('\n') : '等待录制服务输出…'}</pre>
+      </Panel>
+    </div>
+    <div className="column">
+      <Panel title="录制控制" badge={<StatusBadge value={running ? 'recording' : 'paused'} />}>
+        <div className="heroAction"><div><Text fw={800} size="xl">{running ? '录制服务运行中' : '准备开始录制'}</Text><Text c="dimmed" mt={4}>{running ? '正在巡检已启用直播间，开播后自动保存。' : '使用设置页中的画质、格式和分段配置。'}</Text></div><Group><Button leftSection={<Video size={18} />} disabled={running || busy} loading={busy && !running} onClick={() => act(() => api('/api/start', { settings: state.settings }), '录制服务已启动')}>开始录制</Button><Button color="red" variant="light" leftSection={<Square size={17} />} disabled={!running || busy} loading={busy && running} onClick={() => act(() => api('/api/stop', {}), '录制已停止并保存')}>停止并保存</Button></Group></div>
+      </Panel>
+      <Panel title="最近录像" badge={<Text c="dimmed" size="sm">{recordings.length} 场</Text>} actions={<Button size="xs" variant="subtle" leftSection={<FolderOpen size={15} />} onClick={() => api('/api/open-output', {}).catch(e => notify(e.message, true))}>打开目录</Button>}>
+        <div className="list">{recordings.length ? recordings.slice(0, 12).map((group: any, index: number) => <div className="listRow" key={group.id || index}><div className="fileIcon"><Video size={18} /></div><div className="grow"><Text fw={650}>{group.name || group.anchor || '录像'}</Text><Text size="xs" c="dimmed">{group.segment_count || group.files?.length || 1} 个文件 · {formatBytes(group.total_size || group.size)} · {group.modified ? new Date(group.modified * 1000).toLocaleString() : ''}</Text></div></div>) : <Empty>还没有本地录像</Empty>}</div>
+      </Panel>
+    </div>
+  </PageGrid>;
+}
