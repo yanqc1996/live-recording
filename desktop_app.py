@@ -111,6 +111,8 @@ class AppState:
     def __init__(self):
         self.rooms = RoomStore(PROJECT_ROOT / "config" / "URL_config.ini")
         self.anchors = AnchorStore(PROJECT_ROOT / "config" / "anchors.json")
+        self.anchors.import_rooms(self.rooms.list())
+        self.sync_recording_rooms()
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
         self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION, BUILD_COMMIT)
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
@@ -119,6 +121,9 @@ class AppState:
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
+
+    def sync_recording_rooms(self) -> list[dict]:
+        return self.rooms.sync_from_anchors(self.anchors.list())
 
     def _on_recorder_log(self, line: str) -> None:
         candidate_match = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
@@ -184,7 +189,8 @@ class AppState:
                 except Exception:
                     updated = anchor
                 results.append({"anchor": updated, "live_room": None, "ok": False, "error": str(exc)})
-        return {"results": results, "anchors": self.anchors.list(), "checked_at": int(time.time())}
+        self.sync_recording_rooms()
+        return {"results": results, "anchors": self.anchors.list(), "rooms": self.rooms.list(), "checked_at": int(time.time())}
 
     def recordings(self, force: bool = False) -> list[dict]:
         settings = self.settings.load()
@@ -333,7 +339,8 @@ def make_handler(state: AppState, token: str):
                         str(body.get("profile_url", "")),
                         str(body.get("live_url", "")),
                     )
-                    self._json({"anchor": anchor, "anchors": state.anchors.list()}, HTTPStatus.CREATED)
+                    state.sync_recording_rooms()
+                    self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()}, HTTPStatus.CREATED)
                 elif path == "/api/anchors/search":
                     self._json(state.interaction.search_users(str(body.get("keyword", "")), int(body.get("limit", 12))))
                 elif path == "/api/anchors/bulk":
@@ -356,7 +363,8 @@ def make_handler(state: AppState, token: str):
                             "default_quality": item.get("default_quality", "原画"), "output_dir": item.get("output_dir", ""),
                             "enabled_recording": bool(item.get("enabled_recording", True)),
                         })
-                    self._json({"anchors": state.anchors.list()})
+                    state.sync_recording_rooms()
+                    self._json({"anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
                     anchor = state.anchors.update(parts[2], {
                         "name": body.get("name", ""),
@@ -369,7 +377,8 @@ def make_handler(state: AppState, token: str):
                         "output_dir": body.get("output_dir", ""),
                         "enabled_recording": bool(body.get("enabled_recording", True)),
                     })
-                    self._json({"anchor": anchor, "anchors": state.anchors.list()})
+                    state.sync_recording_rooms()
+                    self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "resolve":
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
@@ -386,7 +395,8 @@ def make_handler(state: AppState, token: str):
                     if live_room.get("nickname"):
                         updates["name"] = live_room["nickname"]
                     anchor = state.anchors.update(anchor_id, updates)
-                    self._json({"anchor": anchor, "live_room": live_room, "anchors": state.anchors.list()})
+                    state.sync_recording_rooms()
+                    self._json({"anchor": anchor, "live_room": live_room, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "use-recording":
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
@@ -414,7 +424,9 @@ def make_handler(state: AppState, token: str):
                             anchor = state.anchors.update(anchor_id, updates)
                     if not live_url:
                         raise ValueError("该主播还没有可用直播间地址，请先解析直播间")
-                    room = state.rooms.upsert_active(live_url)
+                    anchor = state.anchors.update(anchor_id, {"enabled_recording": True})
+                    rooms = state.sync_recording_rooms()
+                    room = next((item for item in rooms if live_url in item.get("value", "")), None)
                     self._json({"anchor": anchor, "room": room, "rooms": state.rooms.list(), "live_room": live_room})
                 elif path == "/api/anchors/check-live":
                     self._json(state.check_anchors_live_status())
@@ -472,7 +484,8 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/baidupan/clear-finished":
                     self._json({"baidupan": state.uploads.clear_finished()})
                 elif path == "/api/start":
-                    if not any(room["active"] for room in state.rooms.list()):
+                    state.sync_recording_rooms()
+                    if not any(anchor.get("enabled_recording") and (anchor.get("live_url") or "live.douyin.com/" in str(anchor.get("profile_url") or "")) for anchor in state.anchors.list()):
                         raise ValueError("请至少启用一个直播间")
                     state.settings.save(body.get("settings", {}))
                     state.recorder.start()
@@ -552,7 +565,8 @@ def make_handler(state: AppState, token: str):
                     self._json({"rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
                     state.anchors.delete(parts[2])
-                    self._json({"anchors": state.anchors.list()})
+                    state.sync_recording_rooms()
+                    self._json({"anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 else:
                     self._json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:

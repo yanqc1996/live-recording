@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _atomic_json_write(path: Path, payload: dict) -> None:
@@ -75,6 +77,50 @@ class AnchorStore:
             data["anchors"].append(anchor)
             self._save(data)
             return anchor
+
+    def import_rooms(self, rooms: list[dict]) -> int:
+        """Import legacy recorder entries without duplicating known URLs."""
+        imported = 0
+        with self._lock:
+            data = self._load()
+            known = {
+                str(anchor.get(key) or "").strip().split("?")[0]
+                for anchor in data["anchors"]
+                for key in ("profile_url", "live_url")
+                if anchor.get(key)
+            }
+            now = int(time.time())
+            for room in rooms:
+                value = str(room.get("value") or "")
+                match = re.search(r"https?://[^\s,，]+", value)
+                if not match:
+                    continue
+                url = match.group(0).split("?")[0]
+                if url in known:
+                    continue
+                name_match = re.search(r"主播\s*[:：]\s*([^,，]+)", value)
+                fallback = urlparse(url).netloc or "未命名主播"
+                data["anchors"].append({
+                    "id": uuid.uuid4().hex,
+                    "name": name_match.group(1).strip() if name_match else fallback,
+                    "profile_url": url,
+                    "sec_user_id": "",
+                    "live_url": url if "live.douyin.com/" in url else "",
+                    "web_rid": "",
+                    "room_id": "",
+                    "default_quality": "原画",
+                    "output_dir": "",
+                    "enabled_recording": bool(room.get("active", True)),
+                    "last_live_status": "unknown",
+                    "last_resolved_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+                known.add(url)
+                imported += 1
+            if imported:
+                self._save(data)
+        return imported
 
     def update(self, anchor_id: str, updates: dict) -> dict:
         allowed = {

@@ -163,6 +163,28 @@ class RoomStore:
             _atomic_write(self.path, "\n".join(lines).rstrip() + "\n")
             return self.list()
 
+    def sync_from_anchors(self, anchors: list[dict]) -> list[dict]:
+        """Regenerate recorder entries from the canonical anchor collection."""
+        with self._lock:
+            lines = self._all_lines()
+            positions = set(self._editable_positions(lines))
+            preserved = [line for index, line in enumerate(lines) if index not in positions]
+            entries = []
+            seen = set()
+            for anchor in anchors:
+                live_url = str(anchor.get("live_url") or "").strip().split("?")[0]
+                profile_url = str(anchor.get("profile_url") or "").strip().split("?")[0]
+                url = live_url or (profile_url if "live.douyin.com/" in profile_url else "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                name = str(anchor.get("name") or "未命名主播").strip().replace("\n", " ").replace(",", "，")
+                value = f"{url},主播: {name}"
+                entries.append(value if bool(anchor.get("enabled_recording", True)) else f"#{value}")
+            output = preserved + entries
+            _atomic_write(self.path, "\n".join(output).rstrip() + "\n")
+            return self.list()
+
     def delete(self, room_id: int) -> None:
         with self._lock:
             lines = self._all_lines()

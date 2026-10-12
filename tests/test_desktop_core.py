@@ -52,6 +52,18 @@ class AnchorStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "已经存在"):
                 store.update(first["id"], {"profile_url": "https://www.douyin.com/user/b"})
 
+    def test_legacy_rooms_are_imported_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            rooms = [{"value": "https://live.douyin.com/123,主播: 小王", "active": False}]
+
+            self.assertEqual(1, store.import_rooms(rooms))
+            self.assertEqual(0, store.import_rooms(rooms))
+            anchor = store.list()[0]
+            self.assertEqual("小王", anchor["name"])
+            self.assertEqual("https://live.douyin.com/123", anchor["live_url"])
+            self.assertFalse(anchor["enabled_recording"])
+
 
 class RoomStoreTest(unittest.TestCase):
     def test_add_toggle_and_delete_preserves_other_lines(self):
@@ -83,6 +95,25 @@ class RoomStoreTest(unittest.TestCase):
             self.assertIn("## keep this", content)
             self.assertIn("#https://live.douyin.com/1,主播: 新甲", content)
             self.assertIn("https://live.douyin.com/2,主播: 新乙", content)
+
+    def test_sync_from_anchors_rebuilds_derived_recording_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "URL_config.ini"
+            path.write_text("## keep this\nhttps://live.douyin.com/old,主播: 旧主播\n", encoding="utf-8-sig")
+            store = RoomStore(path)
+
+            rooms = store.sync_from_anchors([
+                {"name": "甲", "live_url": "https://live.douyin.com/1", "enabled_recording": True},
+                {"name": "乙", "profile_url": "https://live.douyin.com/2?from=x", "enabled_recording": False},
+                {"name": "无直播地址", "profile_url": "https://www.douyin.com/user/x", "enabled_recording": True},
+            ])
+
+            self.assertEqual([True, False], [room["active"] for room in rooms])
+            content = path.read_text(encoding="utf-8-sig")
+            self.assertIn("## keep this", content)
+            self.assertNotIn("旧主播", content)
+            self.assertIn("https://live.douyin.com/1,主播: 甲", content)
+            self.assertIn("#https://live.douyin.com/2,主播: 乙", content)
 
 
 class SettingsStoreTest(unittest.TestCase):
