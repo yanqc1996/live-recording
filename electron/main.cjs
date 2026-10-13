@@ -31,6 +31,7 @@ const activeNotifications = new Set();
 const BACKGROUND_DEFAULTS = {
   open_at_login: false,
   launch_hidden: true,
+  hide_dock_when_background: true,
   auto_start_recording: false,
   anonymous_live_access: true,
   prevent_sleep_when_active: true,
@@ -125,8 +126,9 @@ function processStateNotifications(state) {
     return;
   }
   if (settings.notify_recording) {
-    for (const [name, room] of Object.entries(rooms)) {
-      const before = notificationSnapshot.rooms[name];
+    for (const [anchorId, room] of Object.entries(rooms)) {
+      const before = notificationSnapshot.rooms[anchorId];
+      const name = room.name || anchorId;
       if (room.state === 'recording' && before !== 'recording') {
         showSystemNotification('主播已开播，开始录制', `${name}${room.path ? `\n${path.basename(room.path)}` : ''}`);
       } else if (before === 'recording' && room.state !== 'recording') {
@@ -362,7 +364,7 @@ function showMainWindow() {
 function hideMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.hide();
-  if (process.platform === 'darwin') app.dock.hide();
+  if (process.platform === 'darwin' && loadBackgroundSettings().hide_dock_when_background) app.dock.hide();
 }
 
 async function openCompactWindow() {
@@ -746,7 +748,7 @@ async function createMainWindow() {
   mainWindow.on('move', saveCompactWindowBounds);
   mainWindow.on('resize', saveCompactWindowBounds);
   mainWindow.on('show', () => { if (process.platform === 'darwin') app.dock.show(); });
-  mainWindow.on('hide', () => { if (process.platform === 'darwin') app.dock.hide(); });
+  mainWindow.on('hide', () => { if (process.platform === 'darwin' && loadBackgroundSettings().hide_dock_when_background) app.dock.hide(); });
   mainWindow.on('close', (event) => {
     if (process.platform !== 'darwin' || quitting) return;
     event.preventDefault();
@@ -770,7 +772,7 @@ async function createMainWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(backendUrl);
   if (!launchHidden) mainWindow.show();
-  else if (process.platform === 'darwin') app.dock.hide();
+  else if (process.platform === 'darwin' && loadBackgroundSettings().hide_dock_when_background) app.dock.hide();
   return mainWindow;
 }
 
