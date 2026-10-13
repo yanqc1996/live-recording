@@ -1,23 +1,15 @@
 import { ActionIcon, Badge, Button, Drawer, Group, Switch, Text, TextInput, Tooltip } from '@mantine/core';
 import { Activity, FileCheck2, FolderOpen, Plus, Radio, Square, Trash2, TriangleAlert, Video } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../api';
 import { Empty, PageGrid, Panel, StatusBadge, anchorLiveUrl, formatBytes } from '../components';
 import type { Anchor, AppState } from '../types';
 
-export function DashboardPage({ state, refresh, notify }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void }) {
+export function DashboardPage({ state, refresh, notify, logs, detailed, setDetailed, clearLogs }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void; logs: string[]; detailed: boolean; setDetailed: (value: boolean) => void; clearLogs: () => void }) {
   const [room, setRoom] = useState('');
-  const [logs, setLogs] = useState<string[]>([]);
-  const [cursor, setCursor] = useState(0);
-  const [detailed, setDetailed] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const running = !!state.status?.running;
-  useEffect(() => { setCursor(0); setLogs([]); }, [detailed]);
-  useEffect(() => {
-    const poll = async () => { try { const data = await api<any>(`/api/logs?cursor=${cursor}&detail=${detailed ? 1 : 0}`); if (data.lines?.length) setLogs(value => [...value, ...data.lines].slice(-1000)); setCursor(data.cursor || 0); } catch {} };
-    poll(); const timer = window.setInterval(poll, 1000); return () => clearInterval(timer);
-  }, [cursor, detailed]);
   const act = async (fn: () => Promise<any>, message: string) => { setBusy(true); try { await fn(); await refresh(); notify(message); } catch (e) { notify((e as Error).message, true); } finally { setBusy(false); } };
   const addRoom = () => act(async () => { await api('/api/anchors', { name: '未命名主播', profile_url: room, live_url: room }); setRoom(''); }, '主播已加入数据集');
   const toggle = (item: Anchor, active: boolean) => act(() => api(`/api/anchors/${item.id}`, { enabled_recording: active }), active ? '已启用录制' : '已暂停录制');
@@ -60,6 +52,6 @@ export function DashboardPage({ state, refresh, notify }: { state: AppState; ref
         <div className="list">{recordings.length ? recordings.slice(0, 12).map((group: any, index: number) => <div className="listRow" key={group.id || index}><div className="fileIcon"><Video size={18} /></div><div className="grow"><Text fw={650}>{group.name || group.anchor || '录像'}</Text><Text size="xs" c="dimmed">{group.segment_count || group.files?.length || 1} 个文件 · {formatBytes(group.total_size || group.size)} · {group.modified ? new Date(group.modified * 1000).toLocaleString() : ''}</Text></div></div>) : <Empty>还没有本地录像</Empty>}</div>
       </Panel>
     </div>
-    <Drawer opened={logsOpen} onClose={()=>setLogsOpen(false)} position="right" size="lg" title="录制运行事件" overlayProps={{backgroundOpacity:.2,blur:2}}><Group justify="space-between" mb="md"><Text size="sm" c="dimmed">默认只展示开播、录制、完成和异常等关键节点</Text><Group gap="xs"><Button size="xs" variant="light" onClick={() => setDetailed(v => !v)}>{detailed ? '只看关键事件' : '显示全部日志'}</Button><Button size="xs" variant="subtle" onClick={() => setLogs([])}>清空当前显示</Button></Group></Group><div className="eventTimeline">{logs.length ? logs.map((line,index)=>{const event=logEvent(line);return <div className={`logEvent ${event.type}`} key={`${index}-${line}`}><div className="logEventIcon">{event.icon}</div><div className="grow"><Group gap="xs"><Badge size="sm" variant="light" color={event.color}>{event.label}</Badge></Group><Text size="sm" mt={5}>{line}</Text></div></div>}) : <Empty>录制服务产生关键事件后会显示在这里</Empty>}</div></Drawer>
+    <Drawer opened={logsOpen} onClose={()=>setLogsOpen(false)} position="right" size="lg" title="录制运行事件" overlayProps={{backgroundOpacity:.2,blur:2}}><Group justify="space-between" mb="md"><Text size="sm" c="dimmed">默认只展示开播、录制、完成和异常等关键节点</Text><Group gap="xs"><Button size="xs" variant="light" onClick={() => setDetailed(!detailed)}>{detailed ? '只看关键事件' : '显示全部日志'}</Button><Button size="xs" variant="subtle" onClick={clearLogs}>清空当前显示</Button></Group></Group><div className="eventTimeline">{logs.length ? logs.map((line,index)=>{const event=logEvent(line);return <div className={`logEvent ${event.type}`} key={`${index}-${line}`}><div className="logEventIcon">{event.icon}</div><div className="grow"><Group gap="xs"><Badge size="sm" variant="light" color={event.color}>{event.label}</Badge></Group><Text size="sm" mt={5}>{line}</Text></div></div>}) : <Empty>录制服务产生关键事件后会显示在这里</Empty>}</div></Drawer>
   </PageGrid>;
 }

@@ -296,12 +296,10 @@ def make_handler(state: AppState, token: str):
                     state.maybe_reconcile_uploads()
                     recordings = state.recordings()
                     self._json({
-                        "rooms": state.rooms.list(),
                         "anchors": state.anchors.list(),
                         "settings": state.settings.load(),
                         "status": state.recorder.status(),
                         "baidupan": state.uploads.status(),
-                        "auth": {"douyin_connected": state.recorder.has_douyin_session},
                         "update": state.updates.status(),
                         "interaction": state.interaction.status(),
                         "work_pull": state.work_pull.status(),
