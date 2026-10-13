@@ -1001,6 +1001,8 @@ class DouyinInteractionManager:
     def __init__(self):
         self._lock = threading.RLock()
         self._auth = DouyinAuthState.from_cookie("")
+        self._anonymous_auth = DouyinAuthState.from_cookie("")
+        self._anonymous_live_access = True
         self._session: DouyinLiveSession | None = None
         self._thread: threading.Thread | None = None
         self._events: deque[dict] = deque(maxlen=1500)
@@ -1010,10 +1012,19 @@ class DouyinInteractionManager:
         self._audio_source_url = ""
         self._audio_stream_id = ""
 
-    def set_auth(self, cookie: str, security: dict | None = None) -> None:
+    def set_auth(self, cookie: str, security: dict | None = None, anonymous_live_access: bool = True) -> None:
         self.stop_audio()
         with self._lock:
             self._auth = DouyinAuthState.from_cookie(cookie, security)
+            self._anonymous_live_access = bool(anonymous_live_access)
+
+    def set_live_access_mode(self, anonymous: bool) -> None:
+        self.stop_audio()
+        with self._lock:
+            self._anonymous_live_access = bool(anonymous)
+
+    def _live_auth(self) -> DouyinAuthState:
+        return self._anonymous_auth if self._anonymous_live_access else self._auth
 
     @property
     def connected(self) -> bool:
@@ -1023,7 +1034,9 @@ class DouyinInteractionManager:
         with self._lock:
             return {
                 "connected": self.connected,
-                "access_mode": self._auth.access_mode,
+                "access_mode": self._live_auth().access_mode,
+                "account_connected": self.connected,
+                "anonymous_live_access": self._anonymous_live_access,
                 "public_access": True,
                 "listening": bool(self._thread and self._thread.is_alive()),
                 "room_url": self._room_url,
@@ -1050,12 +1063,13 @@ class DouyinInteractionManager:
         if "live.douyin.com/" in room_url:
             room_url = f"{DOUYIN_LIVE_ORIGIN}/{_room_web_rid(room_url)}"
         self.stop_listening()
+        live_auth = self._live_auth()
         with self._lock:
             self._room_url = room_url
-            self._session = DouyinLiveSession(self._room_url, self._auth, self._append)
+            self._session = DouyinLiveSession(self._room_url, live_auth, self._append)
             self._thread = threading.Thread(target=self._run_session, daemon=True)
             self._thread.start()
-        mode = "登录增强模式" if self.connected else "匿名模式"
+        mode = "登录增强模式" if live_auth.connected else "匿名模式"
         self._append({"type": "system", "message": f"正在以{mode}连接直播间弹幕…"})
         return self.status()
 
@@ -1065,7 +1079,7 @@ class DouyinInteractionManager:
             self._session.start()
         except Exception as exc:
             message = str(exc)
-            if not self.connected:
+            if not self._live_auth().connected:
                 message += "；匿名访问可能受到抖音限制，可登录后重试"
             self._append({"type": "error", "message": message})
 
@@ -1143,6 +1157,7 @@ class DouyinInteractionManager:
             raise ValueError("请先选择直播间")
         if "live.douyin.com/" in room_url:
             room_url = f"{DOUYIN_LIVE_ORIGIN}/{_room_web_rid(room_url)}"
+        live_auth = self._live_auth()
 
         # The public room page issues cookies such as ``ttwid``. Calling the
         # webcast enter API with only the generated anonymous cookies is often
@@ -1151,7 +1166,7 @@ class DouyinInteractionManager:
         # returns an empty/non-live response.
         confirmed_live = False
         try:
-            room_info = fetch_live_room_info(self._auth, room_url)
+            room_info = fetch_live_room_info(live_auth, room_url)
             confirmed_live = _is_live_status(room_info.status)
         except Exception:
             room_info = None
@@ -1161,13 +1176,13 @@ class DouyinInteractionManager:
         for attempt in range(2):
             if attempt:
                 try:
-                    room_info = fetch_live_room_info(self._auth, room_url)
+                    room_info = fetch_live_room_info(live_auth, room_url)
                     confirmed_live = confirmed_live or _is_live_status(room_info.status)
                 except Exception:
                     pass
             try:
                 data = asyncio.run(
-                    spider.get_douyin_web_stream_data(room_url, cookies=self._auth.cookie_str)
+                    spider.get_douyin_web_stream_data(room_url, cookies=live_auth.cookie_str)
                 )
                 info = asyncio.run(stream.get_douyin_stream_url(data, quality, "")) or {}
             except Exception as exc:
@@ -1202,7 +1217,7 @@ class DouyinInteractionManager:
             "quality": info.get("quality", quality),
             "format": "mp3",
             "source_format": "hls" if ".m3u8" in str(url) else "flv",
-            "access_mode": self._auth.access_mode,
+            "access_mode": live_auth.access_mode,
         }
 
     def start_audio_stream(self, stream_id: str) -> subprocess.Popen[bytes]:
@@ -1255,12 +1270,13 @@ class DouyinInteractionManager:
         room_url = (room_url or self._room_url).strip()
         if not room_url:
             raise ValueError("请先选择直播间")
+        live_auth = self._live_auth()
         try:
-            result = fetch_gift_rank(self._auth, room_url)
+            result = fetch_gift_rank(live_auth, room_url)
         except Exception as exc:
-            suffix = "；匿名访问可能受到抖音限制，可登录后重试" if not self.connected else ""
+            suffix = "；匿名访问可能受到抖音限制，可切换登录增强后重试" if not live_auth.connected else ""
             raise RuntimeError(f"无法获取礼物贡献榜：{exc}{suffix}") from exc
-        result["access_mode"] = self._auth.access_mode
+        result["access_mode"] = live_auth.access_mode
         return result
 
     def resolve_live_room(self, value: str) -> dict:

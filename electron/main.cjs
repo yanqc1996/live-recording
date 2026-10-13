@@ -32,6 +32,7 @@ const BACKGROUND_DEFAULTS = {
   open_at_login: false,
   launch_hidden: true,
   auto_start_recording: false,
+  anonymous_live_access: true,
   prevent_sleep_when_active: true,
   notify_recording: false,
   notify_upload: false,
@@ -72,6 +73,7 @@ function saveBackgroundSettings(supplied) {
   fs.renameSync(temporary, backgroundSettingsPath());
   applyLoginItemSettings(settings);
   updatePowerBlocker(trayState);
+  if (backendUrl) postBackend('/api/auth/live-access', { anonymous: settings.anonymous_live_access }).catch(console.error);
   return settings;
 }
 
@@ -543,7 +545,11 @@ async function syncDouyinSession() {
   const cookie = connected
     ? cookies.sort((a, b) => a.name.localeCompare(b.name)).map(({ name, value }) => `${name}=${value}`).join('; ')
     : '';
-  await postBackend('/api/auth/douyin', { cookie, security: douyinSecurity });
+  await postBackend('/api/auth/douyin', {
+    cookie,
+    security: douyinSecurity,
+    anonymous_live_access: loadBackgroundSettings().anonymous_live_access
+  });
   const status = { connected, canSend: connected && securityStatus().complete, security: securityStatus() };
   mainWindow?.webContents.send('douyin:status-changed', status);
   return status;

@@ -37,6 +37,7 @@ class LazyDouyinInteraction:
         self._manager = None
         self._cookie = ""
         self._security: dict = {}
+        self._anonymous_live_access = True
 
     def _load(self):
         if self._manager is None:
@@ -44,20 +45,28 @@ class LazyDouyinInteraction:
 
             self._manager = DouyinInteractionManager()
             if self._cookie or self._security:
-                self._manager.set_auth(self._cookie, self._security)
+                self._manager.set_auth(self._cookie, self._security, self._anonymous_live_access)
         return self._manager
 
-    def set_auth(self, cookie: str, security: dict | None = None) -> None:
+    def set_auth(self, cookie: str, security: dict | None = None, anonymous_live_access: bool = True) -> None:
         self._cookie = cookie
         self._security = security or {}
+        self._anonymous_live_access = bool(anonymous_live_access)
         if self._manager is not None:
-            self._manager.set_auth(cookie, self._security)
+            self._manager.set_auth(cookie, self._security, self._anonymous_live_access)
+
+    def set_live_access_mode(self, anonymous: bool) -> None:
+        self._anonymous_live_access = bool(anonymous)
+        if self._manager is not None:
+            self._manager.set_live_access_mode(self._anonymous_live_access)
 
     def status(self) -> dict:
         if self._manager is None:
             return {
                 "connected": bool(self._cookie),
-                "access_mode": "authenticated" if self._cookie else "anonymous",
+                "access_mode": "anonymous" if self._anonymous_live_access or not self._cookie else "authenticated",
+                "account_connected": bool(self._cookie),
+                "anonymous_live_access": self._anonymous_live_access,
                 "public_access": True,
                 "listening": False,
                 "room_url": "",
@@ -550,9 +559,15 @@ def make_handler(state: AppState, token: str):
                     self._json({"ok": True})
                 elif path == "/api/auth/douyin":
                     state.recorder.set_douyin_cookie(str(body.get("cookie", "")))
-                    state.interaction.set_auth(str(body.get("cookie", "")), body.get("security") or {})
+                    state.interaction.set_auth(
+                        str(body.get("cookie", "")), body.get("security") or {},
+                        bool(body.get("anonymous_live_access", True)),
+                    )
                     state.work_pull.set_auth(str(body.get("cookie", "")))
                     self._json({"connected": state.recorder.has_douyin_session})
+                elif path == "/api/auth/live-access":
+                    state.interaction.set_live_access_mode(bool(body.get("anonymous", True)))
+                    self._json({"interaction": state.interaction.status()})
                 elif path == "/api/interaction/start":
                     room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
                     self._json({"interaction": state.interaction.start_listening(room_url)})

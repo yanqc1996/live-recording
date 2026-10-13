@@ -153,6 +153,28 @@ class DouyinAnonymousAccessTest(unittest.TestCase):
         self.assertEqual("anonymous", status["access_mode"])
         thread.return_value.start.assert_called_once()
 
+    @patch("desktop_douyin.threading.Thread")
+    def test_logged_in_account_can_keep_live_listener_anonymous(self, thread):
+        manager = DouyinInteractionManager()
+        manager.set_auth("sessionid_ss=login-token", anonymous_live_access=True)
+
+        status = manager.start_listening("https://live.douyin.com/123")
+
+        self.assertTrue(status["connected"])
+        self.assertTrue(status["account_connected"])
+        self.assertEqual("anonymous", status["access_mode"])
+        self.assertFalse(manager._session.auth.connected)
+
+    @patch("desktop_douyin.threading.Thread")
+    def test_live_listener_can_opt_into_authenticated_access(self, thread):
+        manager = DouyinInteractionManager()
+        manager.set_auth("sessionid_ss=login-token", anonymous_live_access=False)
+
+        status = manager.start_listening("https://live.douyin.com/123")
+
+        self.assertEqual("authenticated", status["access_mode"])
+        self.assertTrue(manager._session.auth.connected)
+
     @patch("src.stream.get_douyin_stream_url", new_callable=AsyncMock)
     @patch("src.spider.get_douyin_web_stream_data", new_callable=AsyncMock)
     @patch("desktop_douyin.fetch_live_room_info")
@@ -218,6 +240,16 @@ class DouyinAnonymousAccessTest(unittest.TestCase):
 
         self.assertEqual("anonymous", result["access_mode"])
         resolver.assert_called_once()
+
+    @patch("desktop_douyin.resolve_live_room", return_value={"room_url": "https://live.douyin.com/123"})
+    def test_room_resolution_still_uses_logged_in_account(self, resolver):
+        manager = DouyinInteractionManager()
+        manager.set_auth("sessionid_ss=login-token", anonymous_live_access=True)
+
+        result = manager.resolve_live_room("https://www.douyin.com/user/example")
+
+        self.assertEqual("authenticated", result["access_mode"])
+        self.assertTrue(resolver.call_args.args[0].connected)
 
     @patch("desktop_douyin.fetch_gift_rank", return_value={"ranks": []})
     def test_gift_rank_is_available_anonymously(self, fetch_rank):
