@@ -46,6 +46,11 @@ DEFAULT_SETTINGS = {
     "check_interval": 300,
 }
 
+
+def normalize_recorder_anchor_name(value: str) -> str:
+    """Remove the recorder engine's transient sequence prefix from display names."""
+    return re.sub(r"^序号\d+\s+", "", str(value or "").strip()).strip()
+
 BOOL_FIELDS = {"split_enabled", "convert_to_mp4", "delete_original", "use_proxy"}
 INT_FIELDS = {"split_seconds", "check_interval"}
 ALLOWED_FORMATS = {"TS", "MKV", "FLV", "MP4", "MP3", "M4A", "MP3音频", "M4A音频"}
@@ -314,7 +319,7 @@ class RecorderProcess:
     def _track_room_state(self, line: str) -> None:
         started = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if started:
-            name = started.group("name").strip()
+            name = normalize_recorder_anchor_name(started.group("name"))
             key = (self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name
             self._room_state_keys[name] = key
             self._room_states[key] = {
@@ -331,7 +336,7 @@ class RecorderProcess:
             line.strip(),
         )
         if completed:
-            name = completed.group("name").strip()
+            name = normalize_recorder_anchor_name(completed.group("name"))
             key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
             previous = self._room_states.get(key, {})
             self._room_states[key] = {
@@ -345,7 +350,7 @@ class RecorderProcess:
             return
         live = re.search(r"(?P<name>.+?)\s+正在直播中", line.strip())
         if live:
-            name = live.group("name").strip()
+            name = normalize_recorder_anchor_name(live.group("name"))
             key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
             self._room_state_keys[name] = key
             previous = self._room_states.get(key, {})

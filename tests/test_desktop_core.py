@@ -177,8 +177,17 @@ class RecorderProcessTest(unittest.TestCase):
         self.assertEqual("主播甲", states["anchor-123"]["name"])
         self.assertEqual("anchor-123", states["anchor-123"]["anchor_id"])
 
-        recorder._append_log("主播甲 2026-10-09 14:00:00 直播录制完成")
+        recorder._append_log("序号3 主播甲 2026-10-09 14:00:00 直播录制完成")
         self.assertEqual("waiting", recorder.status()["room_states"]["anchor-123"]["state"])
+
+    def test_sequence_prefix_does_not_leave_stale_recording_state(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder._append_log("吐司 准备开始录制视频: /tmp/吐司.ts")
+        recorder._append_log("序号3 吐司 2026-10-13 13:02:30 直播录制完成")
+
+        states = recorder.status()["room_states"]
+        self.assertEqual(["吐司"], list(states))
+        self.assertEqual("waiting", states["吐司"]["state"])
 
     def test_douyin_session_is_kept_in_memory(self):
         recorder = RecorderProcess(Path.cwd())

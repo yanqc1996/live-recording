@@ -34,8 +34,8 @@ class AppStateRecordingUploadTest(unittest.TestCase):
 
         state._on_recorder_log("主播甲 准备开始录制视频: /tmp/a.ts")
         state._on_recorder_log("主播乙 准备开始录制视频: /tmp/b.ts")
-        state._on_recorder_log("主播甲 2026-10-09 15:00:00 直播录制完成")
-        state._on_recorder_log("主播乙 2026-10-09 15:01:00 直播录制完成")
+        state._on_recorder_log("序号1 主播甲 2026-10-09 15:00:00 直播录制完成")
+        state._on_recorder_log("序号2 主播乙 2026-10-09 15:01:00 直播录制完成")
 
         self.assertEqual([("/tmp/a.ts", "主播甲"), ("/tmp/b.ts", "主播乙")], state.uploads.items)
 

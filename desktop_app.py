@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
-from desktop_core import RecorderProcess, RoomStore, SettingsStore
+from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_recorder_anchor_name
 from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, scan_recordings
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
@@ -154,7 +154,7 @@ class AppState:
     def _on_recorder_log(self, line: str) -> None:
         candidate_match = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if candidate_match:
-            record_name = candidate_match.group("name").strip()
+            record_name = normalize_recorder_anchor_name(candidate_match.group("name"))
             self._recording_candidates[record_name] = {
                 "record_name": record_name,
                 "save_file_path": candidate_match.group("path").strip(),
@@ -167,7 +167,7 @@ class AppState:
         if not (config.get("enabled") and config.get("auto_upload")):
             return
         completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成", line.strip())
-        completed_name = completed_match.group("name").strip() if completed_match else ""
+        completed_name = normalize_recorder_anchor_name(completed_match.group("name")) if completed_match else ""
         candidate = self._recording_candidates.pop(completed_name, None)
         if not candidate and self._recording_candidates:
             candidate = max(self._recording_candidates.values(), key=lambda item: float(item.get("created_at") or 0))
