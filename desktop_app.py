@@ -174,6 +174,13 @@ class AppState:
         if not candidate or time.time() - float(candidate.get("created_at") or 0) > 24 * 3600:
             return
         settings = self.settings.load()
+        if bool(settings.get("split_enabled")):
+            threading.Thread(
+                target=self._merge_and_enqueue_completed_recording,
+                args=(candidate, settings), daemon=True,
+                name="recording-merge-upload",
+            ).start()
+            return
         try:
             self.uploads.enqueue_recording(
                 str(candidate.get("save_file_path") or ""),
@@ -185,6 +192,53 @@ class AppState:
             )
         except Exception as exc:
             self.recorder._append_log(f"桌面控制台：录制完成后加入百度网盘上传队列失败：{exc}")
+
+    def _merge_and_enqueue_completed_recording(self, candidate: dict, settings: dict) -> None:
+        """Merge a completed split session before creating its sole upload task."""
+        time.sleep(1)
+        record_name = str(candidate.get("record_name") or "")
+        candidate_path = Path(str(candidate.get("save_file_path") or ""))
+        candidate_base = re.sub(r"_(?:%0?3d|\d{3,})$", "", candidate_path.stem)
+        try:
+            groups = self.recording_archive_groups()
+            group = next((item for item in groups if any(
+                Path(str(segment.get("path") or "")).resolve() == candidate_path.resolve()
+                for segment in item.get("segments") or []
+            )), None)
+            if not group:
+                group = next((item for item in groups if (
+                    Path(str(item.get("id") or "")).name == candidate_base
+                    or (
+                        str(item.get("anchor") or "") == record_name
+                        and item.get("segment_count", 0) > 1
+                        and float(item.get("latest_modified") or 0) >= float(candidate.get("created_at") or 0)
+                    )
+                )), None)
+            if group and int(group.get("segment_count") or 0) > 1:
+                merged = group.get("merged_file") or merge_recording_group(group, minimum_age_seconds=0)
+                self.uploads.replace_segments_with_merged(
+                    str(merged.get("path") or ""),
+                    [str(item.get("path") or "") for item in group.get("segments") or []],
+                    record_name=record_name,
+                )
+                self._recordings.invalidate()
+                self.recorder._append_log(f"桌面控制台：分段已合并并加入上传队列：{merged.get('path')}")
+                return
+            self.uploads.enqueue_recording(
+                str(candidate_path), record_name=record_name,
+                save_type=str(settings.get("format") or ""), split_video_by_time=True,
+                converts_to_mp4=bool(settings.get("convert_to_mp4")), source="recording",
+            )
+        except Exception as exc:
+            self.recorder._append_log(f"桌面控制台：分段自动合并失败，将按原分段上传：{exc}")
+            try:
+                self.uploads.enqueue_recording(
+                    str(candidate_path), record_name=record_name,
+                    save_type=str(settings.get("format") or ""), split_video_by_time=True,
+                    converts_to_mp4=bool(settings.get("convert_to_mp4")), source="recording-fallback",
+                )
+            except Exception as upload_exc:
+                self.recorder._append_log(f"桌面控制台：原分段加入上传队列失败：{upload_exc}")
 
     def media_library(self) -> dict:
         return MediaLibrary(self.output_path()).scan()
@@ -566,8 +620,13 @@ def make_handler(state: AppState, token: str):
                     if group_path != output_root and output_root not in group_path.parents:
                         raise ValueError("录像不在当前保存目录中")
                     merged = merge_recording_group(group)
+                    archive = state.uploads.replace_segments_with_merged(
+                        merged["path"],
+                        [str(item.get("path") or "") for item in group.get("segments") or []],
+                        record_name=str(group.get("anchor") or ""),
+                    )
                     state._recordings.invalidate()
-                    self._json({"merged": merged})
+                    self._json({"merged": merged, "archive": archive})
                 elif path == "/api/auth/douyin":
                     state.recorder.set_douyin_cookie(str(body.get("cookie", "")))
                     state.interaction.set_auth(

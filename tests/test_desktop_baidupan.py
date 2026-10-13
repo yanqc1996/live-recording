@@ -167,6 +167,49 @@ class BaiduPanUploadManagerTest(unittest.TestCase):
             self.assertFalse(second.exists())
             self.assertTrue(status["queue"][0]["local_deleted"])
 
+    def test_merged_upload_archives_segments_and_cleans_them_after_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "recording_000.ts"
+            second = root / "recording_001.ts"
+            merged = root / "recording_完整.ts"
+            for path in (first, second, merged):
+                path.write_bytes(b"video")
+            manager = BaiduPanUploadManager(root, root)
+            manager._ensure_worker = lambda: None
+            manager.save_config({"enabled": True, "auto_upload": True})
+
+            result = manager.replace_segments_with_merged(str(merged), [str(first), str(second)], "主播")
+            item = result["item"]
+            self.assertEqual(str(merged), item["save_file_path"])
+            self.assertEqual({str(first), str(second)}, set(item["cleanup_paths"]))
+
+            manager._finish_item(item["id"], "success", "", remote_verified=True, uploaded_files=[str(merged)])
+            manager.status()
+
+            self.assertFalse(merged.exists())
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+
+    def test_reconcile_only_uploads_merged_file_and_marks_segments_archived(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "recording_000.ts"
+            merged = root / "recording_完整.ts"
+            first.write_bytes(b"part")
+            merged.write_bytes(b"whole")
+            old = time.time() - 600
+            manager = BaiduPanUploadManager(root, root)
+            result = manager.reconcile_files([{
+                "anchor": "主播", "latest_modified": old,
+                "segments": [{"path": str(first)}], "merged_file": {"path": str(merged)},
+                "files": [{"path": str(first)}, {"path": str(merged)}],
+            }], enqueue=True)
+
+            statuses = {item["path"]: item["status"] for item in result["files"]}
+            self.assertEqual("archived", statuses[str(first)])
+            self.assertEqual(str(merged), manager._load_queue()[0]["save_file_path"])
+
     def test_pending_item_can_be_paused_resumed_and_cancelled(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -188,7 +188,15 @@ class BaiduPanUploadManager:
         for group in groups:
             anchor = str(group.get("anchor") or "历史录像")
             group_active = now - float(group.get("latest_modified") or 0) < 300
-            for file_item in group.get("files") or []:
+            merged_file = group.get("merged_file")
+            archived_paths = {
+                str(Path(str(file_item.get("path") or "")))
+                for file_item in (group.get("segments") or [])
+            } if merged_file else set()
+            upload_files = [merged_file] if merged_file else (group.get("files") or [])
+            for path in archived_paths:
+                files.append({"path": path, "status": "archived", "item_id": ""})
+            for file_item in upload_files:
                 path = str(Path(str(file_item.get("path") or "")))
                 item = by_path.get(path)
                 status = str(item.get("status")) if item else ("success" if path in history else "untracked")
@@ -312,6 +320,7 @@ class BaiduPanUploadManager:
         split_video_by_time: bool = False,
         converts_to_mp4: bool = False,
         source: str = "auto",
+        cleanup_paths: list[str] | None = None,
     ) -> dict:
         path = Path(str(save_file_path or "").strip()).expanduser()
         if not str(path):
@@ -345,6 +354,7 @@ class BaiduPanUploadManager:
             "error": "",
             "remote_verified": False,
             "local_deleted": False,
+            "cleanup_paths": list(dict.fromkeys(str(Path(value)) for value in (cleanup_paths or []) if value)),
             "file_size": path.stat().st_size if path.exists() and path.is_file() else 0,
         }
         with self._lock:
@@ -362,6 +372,30 @@ class BaiduPanUploadManager:
         self._ensure_worker()
         return item
 
+    def replace_segments_with_merged(self, merged_file: str, segments: list[str], record_name: str = "") -> dict:
+        """Archive source segments and make the merged file the only upload candidate."""
+        merged = str(Path(merged_file))
+        segment_paths = {str(Path(value)) for value in segments if value and str(Path(value)) != merged}
+        with self._lock:
+            queue = self._load_queue()
+            for item in queue:
+                item_path = str(Path(str(item.get("save_file_path") or "")))
+                if item_path in segment_paths and item.get("status") in {"pending", "paused", "failed"}:
+                    item.update({
+                        "status": "cancelled", "updated_at": int(time.time()),
+                        "error": "已生成完整文件，原分段不再单独上传",
+                        "superseded_by": merged,
+                    })
+            self._save_queue(queue)
+        config = self.load_config()
+        if not (config.get("enabled") and config.get("auto_upload")):
+            return {"item": None, "archived": len(segment_paths)}
+        item = self.enqueue_recording(
+            merged, record_name=record_name, save_type=Path(merged).suffix.lstrip(".").upper(),
+            source="merged", cleanup_paths=sorted(segment_paths),
+        )
+        return {"item": item, "archived": len(segment_paths)}
+
     def enqueue_archive(self, groups: list[dict]) -> dict:
         config = self.load_config()
         if not config.get("enabled"):
@@ -370,13 +404,17 @@ class BaiduPanUploadManager:
         existing = 0
         for group in groups:
             anchor = str(group.get("anchor") or "历史录像")
-            for file_item in group.get("files") or []:
+            merged_file = group.get("merged_file")
+            upload_files = [merged_file] if merged_file else (group.get("files") or [])
+            cleanup_paths = [str(item.get("path") or "") for item in group.get("segments") or []] if merged_file else []
+            for file_item in upload_files:
                 before = len(self._load_queue())
                 self.enqueue_recording(
                     str(file_item.get("path") or ""),
                     record_name=anchor,
                     save_type=Path(str(file_item.get("path") or "")).suffix.lstrip(".").upper(),
                     source="archive",
+                    cleanup_paths=cleanup_paths,
                 )
                 after = len(self._load_queue())
                 if after > before:
@@ -613,6 +651,8 @@ class BaiduPanUploadManager:
                 if item.get("local_deleted"):
                     continue
                 paths = [Path(str(value)) for value in item.get("uploaded_files") or [item.get("save_file_path") or ""]]
+                paths.extend(Path(str(value)) for value in item.get("cleanup_paths") or [])
+                paths = list(dict.fromkeys(paths))
                 existing = [path for path in paths if path.exists() and path.is_file()]
                 if existing:
                     keep_seconds = int(item.get("keep_local_days") or 0) * 86400
