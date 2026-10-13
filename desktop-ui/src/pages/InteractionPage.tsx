@@ -1,23 +1,23 @@
 import { Button, Group, Select, Switch, Text, TextInput } from '@mantine/core';
 import { Headphones, MessageCircle, Play, Radio, Send, Square, Trash2 } from 'lucide-react';
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { api, audioStreamUrl } from '../api';
+import { api } from '../api';
 import { Empty, PageGrid, Panel, anchorLiveUrl } from '../components';
 import type { AppState } from '../types';
 
-export function InteractionPage({ state, refresh, notify }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, e?: boolean) => void }) {
+export function InteractionPage({ state, refresh, notify, audioAnchorId, audioPlaying, startAudio, stopAudio }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, e?: boolean) => void; audioAnchorId: string; audioPlaying: boolean; startAudio: (anchorId?: string) => Promise<void>; stopAudio: () => Promise<void> }) {
   const available = state.anchors.filter(anchor => !!anchorLiveUrl(anchor));
   const savedId = localStorage.getItem('liveRecorderSelectedAnchor');
   const [anchorId, setAnchorId] = useState(savedId && available.some(anchor => anchor.id === savedId) ? savedId : available[0]?.id || '');
   const selectedAnchor = state.anchors.find(anchor => anchor.id === anchorId);
   const room = anchorLiveUrl(selectedAnchor);
-  const [message, setMessage] = useState(''); const [events, setEvents] = useState<any[]>([]); const [cursor, setCursor] = useState(0); const [audio, setAudio] = useState(''); const [rank, setRank] = useState<any[]>([]); const [workMode, setWorkMode] = useState(localStorage.getItem('liveRecorderWorkMode') === '1');
+  const [message, setMessage] = useState(''); const [events, setEvents] = useState<any[]>([]); const [cursor, setCursor] = useState(0); const [rank, setRank] = useState<any[]>([]); const [workMode, setWorkMode] = useState(localStorage.getItem('liveRecorderWorkMode') === '1');
   const feed = useRef<HTMLDivElement>(null); const listening = !!state.interaction?.listening;
   useEffect(() => { const poll = async () => { try { const data = await api<any>(`/api/interaction/events?cursor=${cursor}`); if (data.events?.length) setEvents(v => [...v, ...data.events].slice(-800)); setCursor(data.cursor || 0); } catch {} }; poll(); const timer = setInterval(poll, 1000); return () => clearInterval(timer); }, [cursor]);
   useEffect(() => { if (feed.current) feed.current.scrollTop = feed.current.scrollHeight; }, [events]);
   const act = async (fn: () => Promise<any>, success?: string) => { try { const data = await fn(); await refresh(); if (success) notify(success); return data; } catch (e) { notify((e as Error).message, true); } };
   const send = async (e: FormEvent) => { e.preventDefault(); await act(() => api('/api/interaction/send', { content: message }), '弹幕已提交'); setMessage(''); };
-  const loadAudio = async () => { const data = await act(() => api<any>('/api/interaction/audio-source', { anchor_id: anchorId })); if (data?.audio?.stream_id) setAudio(audioStreamUrl(data.audio.stream_id)); };
+  const playingAnchor = state.anchors.find(anchor => anchor.id === audioAnchorId);
   return <PageGrid>
     <div className="column">
       <Panel title="直播间控制" badge={<Text size="sm" c={listening ? 'green' : 'dimmed'}>{listening ? '监听中' : '未监听'}</Text>}>
@@ -25,7 +25,7 @@ export function InteractionPage({ state, refresh, notify }: { state: AppState; r
         <Group mt="md"><Button leftSection={<Play size={16} />} disabled={listening || !room} onClick={() => act(() => api('/api/interaction/start', { anchor_id: anchorId }), '弹幕监听已连接')}>开始监听</Button><Button color="red" variant="light" leftSection={<Square size={15} />} disabled={!listening} onClick={() => act(() => api('/api/interaction/stop', {}), '监听已停止')}>停止</Button><Switch checked={workMode} label="工作模式" onChange={e => { setWorkMode(e.currentTarget.checked); localStorage.setItem('liveRecorderWorkMode', e.currentTarget.checked ? '1' : '0'); }} /></Group>
       </Panel>
       <Panel title="只听直播声音" badge={<Headphones size={17} />}>
-        <Group mb="sm"><Button variant="light" onClick={loadAudio}>获取音频源</Button><Button variant="subtle" onClick={() => { setAudio(''); api('/api/interaction/audio-stop', {}).catch(() => {}); }}>停止声音</Button></Group>{audio ? <audio className="audio" src={audio} controls autoPlay /> : <Text c="dimmed" size="sm">获取后会在本机转码并播放，断线时可重新获取。</Text>}
+        <Group mb="sm"><Button variant="light" disabled={!anchorId || (audioPlaying && audioAnchorId === anchorId)} onClick={() => startAudio(anchorId)}>{audioPlaying && audioAnchorId !== anchorId ? '切换到当前主播' : '播放声音'}</Button><Button variant="subtle" disabled={!audioPlaying} onClick={() => stopAudio().catch(e => notify((e as Error).message, true))}>停止声音</Button></Group><Text c={audioPlaying ? 'green' : 'dimmed'} size="sm">{audioPlaying ? `正在播放：${playingAnchor?.name || '直播声音'}；切换到其他页面会继续播放。` : '声音会在全局播放器中播放，切换页面不会中断。'}</Text>
       </Panel>
       {!workMode && <Panel title="礼物贡献榜" actions={<Button size="xs" variant="subtle" onClick={async () => { const data = await act(() => api<any>('/api/interaction/gift-rank', { anchor_id: anchorId })); setRank(data?.gift_rank?.users || data?.gift_rank?.ranks || []); }}>刷新榜单</Button>}>
         {rank.length ? rank.map((item, i) => <div className="listRow" key={item.user?.id || i}><Text fw={800} w={24}>{i + 1}</Text><div className="grow"><Text>{item.user?.nickname || item.nickname || '匿名用户'}</Text><Text size="xs" c="dimmed">{item.score || item.value || ''}</Text></div></div>) : <Empty>刷新后显示当前贡献榜</Empty>}
