@@ -279,15 +279,17 @@ class SettingsStore:
 
 
 class RecorderProcess:
-    def __init__(self, project_root: Path, on_log: Callable[[str], None] | None = None):
+    def __init__(self, project_root: Path, on_log: Callable[[str], None] | None = None, resolve_anchor_id: Callable[[str], str | None] | None = None):
         self.project_root = project_root
         self.on_log = on_log
+        self.resolve_anchor_id = resolve_anchor_id
         self.process: subprocess.Popen[str] | None = None
         self.started_at: float | None = None
         self.logs: deque[str] = deque(maxlen=1200)
         self._log_offset = 0
         self._douyin_cookie = ""
         self._room_states: dict[str, dict] = {}
+        self._room_state_keys: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def set_douyin_cookie(self, cookie: str) -> None:
@@ -313,7 +315,10 @@ class RecorderProcess:
         started = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if started:
             name = started.group("name").strip()
-            self._room_states[name] = {
+            key = (self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name
+            self._room_state_keys[name] = key
+            self._room_states[key] = {
+                "anchor_id": key if key != name else "",
                 "name": name,
                 "state": "recording",
                 "started_at": time.time(),
@@ -327,9 +332,11 @@ class RecorderProcess:
         )
         if completed:
             name = completed.group("name").strip()
-            previous = self._room_states.get(name, {})
-            self._room_states[name] = {
+            key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
+            previous = self._room_states.get(key, {})
+            self._room_states[key] = {
                 **previous,
+                "anchor_id": key if key != name else "",
                 "name": name,
                 "state": "waiting",
                 "completed_at": time.time(),
@@ -339,10 +346,13 @@ class RecorderProcess:
         live = re.search(r"(?P<name>.+?)\s+正在直播中", line.strip())
         if live:
             name = live.group("name").strip()
-            previous = self._room_states.get(name, {})
+            key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
+            self._room_state_keys[name] = key
+            previous = self._room_states.get(key, {})
             if previous.get("state") != "recording":
-                self._room_states[name] = {
+                self._room_states[key] = {
                     **previous,
+                    "anchor_id": key if key != name else "",
                     "name": name,
                     "state": "live",
                     "updated_at": time.time(),
@@ -361,6 +371,7 @@ class RecorderProcess:
             if self.is_running:
                 raise RuntimeError("录制服务已经在运行")
             self._room_states.clear()
+            self._room_state_keys.clear()
             missing = self.preflight()
             if missing:
                 raise RuntimeError("缺少运行依赖：" + "、".join(missing))
@@ -433,7 +444,7 @@ class RecorderProcess:
             "pid": self.process.pid if self.is_running and self.process else None,
             "started_at": self.started_at if self.is_running else None,
             "missing_dependencies": self.preflight(),
-            "room_states": {name: dict(value) for name, value in self._room_states.items()},
+            "room_states": {anchor_id: dict(value) for anchor_id, value in self._room_states.items()},
         }
 
     @staticmethod

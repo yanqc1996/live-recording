@@ -19,7 +19,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
   const displayState = (anchor: Anchor) => {
     if (!anchorLiveUrl(anchor)) return 'error';
     if (anchor.enabled_recording === false) return 'paused';
-    const runtime = roomStates[anchor.name]?.state;
+    const runtime = roomStates[anchor.id]?.state;
     if (runtime === 'recording' || runtime === 'live') return runtime;
     if (running) return 'waiting';
     return anchor.last_live_status || 'unknown';
@@ -39,7 +39,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
     </Panel></div>
     <div className="column">
       <Panel title="主播实时状态" badge={<Text c="dimmed" size="sm">每 4 秒刷新</Text>}>
-        <div className="list roomStatusList">{state.anchors.length ? state.anchors.map(item => { const runtime=roomStates[item.name]; const status=displayState(item); return <div className={`listRow roomStatus ${status}`} key={item.id}>
+        <div className="list roomStatusList">{state.anchors.length ? state.anchors.map(item => { const runtime=roomStates[item.id]; const status=displayState(item); return <div className={`listRow roomStatus ${status}`} key={item.id}>
           <Switch checked={item.enabled_recording !== false} disabled={running || busy || !anchorLiveUrl(item)} onChange={e => toggle(item, e.currentTarget.checked)} />
           <div className="grow"><Group gap="xs"><span className="roomStateDot"/><Text fw={700}>{item.name}</Text><StatusBadge value={status} /></Group><Text size="xs" c="dimmed" truncate>{runtime?.path ? `正在写入：${runtime.path}` : status === 'waiting' ? '录制服务正在巡检，开播后会自动开始录制' : status === 'live' ? '已检测到开播，正在准备录制' : anchorLiveUrl(item) || '尚未解析直播间地址'}</Text>{runtime?.updated_at&&<Text size="xs" c="dimmed">状态更新：{new Date(runtime.updated_at*1000).toLocaleTimeString()}</Text>}</div>
           <Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>

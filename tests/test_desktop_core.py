@@ -7,6 +7,13 @@ from desktop_anchors import AnchorStore
 
 
 class AnchorStoreTest(unittest.TestCase):
+    def test_unique_display_name_resolves_to_canonical_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            anchor = store.add("在下旺旺雪饼🫓", "https://www.douyin.com/user/current")
+
+            self.assertEqual(anchor["id"], store.find_id_by_name("在下旺旺雪饼"))
+
     def test_optional_live_url_is_normalized_and_saved(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AnchorStore(Path(directory) / "anchors.json")
@@ -161,6 +168,18 @@ class SettingsStoreTest(unittest.TestCase):
 
 
 class RecorderProcessTest(unittest.TestCase):
+    def test_recording_state_uses_canonical_anchor_id(self):
+        recorder = RecorderProcess(Path.cwd(), resolve_anchor_id=lambda name: "anchor-123" if name == "主播甲" else None)
+        recorder._append_log("主播甲 准备开始录制视频: /tmp/主播甲_001.ts")
+
+        states = recorder.status()["room_states"]
+        self.assertNotIn("主播甲", states)
+        self.assertEqual("主播甲", states["anchor-123"]["name"])
+        self.assertEqual("anchor-123", states["anchor-123"]["anchor_id"])
+
+        recorder._append_log("主播甲 2026-10-09 14:00:00 直播录制完成")
+        self.assertEqual("waiting", recorder.status()["room_states"]["anchor-123"]["state"])
+
     def test_douyin_session_is_kept_in_memory(self):
         recorder = RecorderProcess(Path.cwd())
         self.assertFalse(recorder.has_douyin_session)

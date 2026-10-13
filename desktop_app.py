@@ -127,7 +127,7 @@ class AppState:
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._recording_candidates: dict[str, dict] = {}
         self._recordings = RecentRecordingCache()
-        self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log)
+        self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log, resolve_anchor_id=self.anchors.find_id_by_name)
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
         self._last_upload_reconcile = 0.0

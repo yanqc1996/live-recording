@@ -57,6 +57,15 @@ class AnchorStore:
             raise IndexError("主播不存在")
         return anchor
 
+    def find_id_by_name(self, name: str) -> str | None:
+        """Resolve a recorder display name to one unambiguous canonical anchor id."""
+        key = _normalized_anchor_name(name)
+        if not key:
+            return None
+        matches = [str(item.get("id") or "") for item in self.list() if _normalized_anchor_name(item.get("name", "")) == key]
+        matches = [value for value in matches if value]
+        return matches[0] if len(matches) == 1 else None
+
     def add(self, name: str, profile_url: str, live_url: str = "") -> dict:
         name = name.strip()
         profile_url = profile_url.strip()
