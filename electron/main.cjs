@@ -344,16 +344,25 @@ async function ensureAutomaticRecording() {
   if (!settings.auto_start_recording) return false;
   const state = await backendState();
   if (state.status?.running) return true;
-  if (!(state.rooms || []).some((room) => room.active)) throw new Error('自动录制已开启，但没有启用的直播间');
+  if (!(state.anchors || []).some((anchor) => anchor.enabled_recording !== false && (anchor.live_url || anchor.web_rid))) {
+    throw new Error('自动录制已开启，但没有启用且已解析直播间的主播');
+  }
   await postBackend('/api/start', { settings: state.settings || {} });
   return true;
 }
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (process.platform === 'darwin') app.dock.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+function hideMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.hide();
+  if (process.platform === 'darwin') app.dock.hide();
 }
 
 async function openCompactWindow() {
@@ -399,7 +408,7 @@ function rebuildTrayMenu() {
     },
     { label: '打开小窗控制', click: () => openCompactWindow().catch((error) => dialog.showErrorBox('无法打开小窗', error.message)) },
     { label: '打开播录助手', click: showMainWindow },
-    { label: '隐藏窗口', enabled: Boolean(mainWindow?.isVisible()), click: () => mainWindow?.hide() },
+    { label: '隐藏窗口', enabled: Boolean(mainWindow?.isVisible()), click: hideMainWindow },
     { type: 'separator' },
     { label: '退出播录助手', click: () => app.quit() }
   ]));
@@ -736,10 +745,12 @@ async function createMainWindow() {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.on('move', saveCompactWindowBounds);
   mainWindow.on('resize', saveCompactWindowBounds);
+  mainWindow.on('show', () => { if (process.platform === 'darwin') app.dock.show(); });
+  mainWindow.on('hide', () => { if (process.platform === 'darwin') app.dock.hide(); });
   mainWindow.on('close', (event) => {
     if (process.platform !== 'darwin' || quitting) return;
     event.preventDefault();
-    mainWindow.hide();
+    hideMainWindow();
     const windowState = loadWindowState();
     if (windowState.backgroundCloseHintShown) return;
     saveWindowState({ backgroundCloseHintShown: true });
@@ -759,6 +770,7 @@ async function createMainWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(backendUrl);
   if (!launchHidden) mainWindow.show();
+  else if (process.platform === 'darwin') app.dock.hide();
   return mainWindow;
 }
 
