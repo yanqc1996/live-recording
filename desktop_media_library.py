@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from collections import defaultdict
@@ -67,7 +70,7 @@ class RecentRecordingCache:
 def group_recordings(files: list[dict]) -> list[dict]:
     """Group recorder segments that share the same anchor and start timestamp."""
     groups: dict[str, dict] = {}
-    pattern = re.compile(r"^(?P<prefix>.+)_(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})_(?P<part>\d{3,})$")
+    pattern = re.compile(r"^(?P<prefix>.+)_(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})_(?P<part>\d{3,}|完整)$")
     for item in files:
         path = Path(str(item.get("path") or ""))
         match = pattern.match(path.stem)
@@ -82,6 +85,8 @@ def group_recordings(files: list[dict]) -> list[dict]:
             "segment_count": 0,
             "formats": set(),
             "files": [],
+            "segments": [],
+            "merged_file": None,
         })
         if match:
             try:
@@ -91,10 +96,16 @@ def group_recordings(files: list[dict]) -> list[dict]:
             except ValueError:
                 pass
         group["latest_modified"] = max(group["latest_modified"], float(item.get("modified") or 0))
-        group["total_size"] += int(item.get("size") or 0)
-        group["segment_count"] += 1
+        is_merged = bool(match and match.group("part") == "完整")
+        if not is_merged:
+            group["total_size"] += int(item.get("size") or 0)
+            group["segment_count"] += 1
         group["formats"].add(path.suffix.lstrip(".").upper())
         group["files"].append(item)
+        if is_merged:
+            group["merged_file"] = item
+        else:
+            group["segments"].append(item)
     result = []
     for group in groups.values():
         group["files"].sort(key=lambda item: float(item.get("modified") or 0), reverse=True)
@@ -102,9 +113,65 @@ def group_recordings(files: list[dict]) -> list[dict]:
         group["name"] = group["files"][0].get("name", "")
         group["format"] = "/".join(sorted(group.pop("formats")))
         group["duration_seconds"] = max(0, int(group["latest_modified"] - group["started_at"]))
+        extensions = {Path(str(item.get("path") or "")).suffix.lower() for item in group["segments"]}
+        group["settled"] = time.time() - group["latest_modified"] >= 60
+        group["mergeable"] = (
+            group["segment_count"] >= 2 and len(extensions) == 1
+            and not group["merged_file"] and group["settled"]
+        )
         result.append(group)
     result.sort(key=lambda group: group["latest_modified"], reverse=True)
     return result
+
+
+def merge_recording_group(group: dict, ffmpeg: str | None = None, minimum_age_seconds: int = 60) -> dict:
+    """Losslessly concatenate a completed recording's same-format segments."""
+    segments = [Path(str(item.get("path") or "")).resolve() for item in group.get("segments") or []]
+    if len(segments) < 2:
+        raise ValueError("该场直播不足 2 个分段，无需合并")
+    if any(not path.is_file() for path in segments):
+        raise ValueError("部分录像分段已不存在，请刷新媒体库")
+    parents = {path.parent for path in segments}
+    suffixes = {path.suffix.lower() for path in segments}
+    if len(parents) != 1 or len(suffixes) != 1:
+        raise ValueError("仅支持合并同一目录、同一格式的录像分段")
+    newest_mtime = max(path.stat().st_mtime for path in segments)
+    if time.time() - newest_mtime < minimum_age_seconds:
+        raise RuntimeError("录像分段仍可能正在写入，请结束录制并稍后再合并")
+    if group.get("merged_file"):
+        raise FileExistsError("该场直播已经生成完整文件")
+
+    executable = ffmpeg or shutil.which("ffmpeg")
+    if not executable:
+        raise RuntimeError("未找到 FFmpeg，无法合并录像")
+    first = segments[0]
+    match = re.match(r"^(?P<base>.+)_\d{3,}$", first.stem)
+    base = match.group("base") if match else first.stem
+    output = first.parent / f"{base}_完整{first.suffix.lower()}"
+    if output.exists():
+        raise FileExistsError(f"完整文件已存在：{output.name}")
+    temporary_output = output.with_name(f".{output.stem}.merging{output.suffix}")
+
+    ordered = sorted(segments, key=lambda path: path.name)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", dir=first.parent, delete=False) as handle:
+        manifest = Path(handle.name)
+        for path in ordered:
+            escaped = str(path).replace("'", "'\\''")
+            handle.write(f"file '{escaped}'\n")
+    try:
+        process = subprocess.run(
+            [executable, "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c", "copy", "-y", str(temporary_output)],
+            capture_output=True, text=True, timeout=24 * 3600,
+        )
+        if process.returncode != 0 or not temporary_output.exists() or temporary_output.stat().st_size <= 0:
+            message = (process.stderr or process.stdout or "FFmpeg 未生成有效文件").strip()
+            raise RuntimeError(f"合并失败：{message[-500:]}")
+        temporary_output.replace(output)
+        stat = output.stat()
+        return {"name": output.name, "path": str(output), "size": stat.st_size, "modified": stat.st_mtime}
+    finally:
+        manifest.unlink(missing_ok=True)
+        temporary_output.unlink(missing_ok=True)
 
 
 def _kind(path: Path) -> str:
@@ -195,6 +262,9 @@ class MediaLibrary:
         for summary in anchor_list:
             anchor_files = sorted(files_by_anchor[summary["anchor"]], key=lambda item: item["modified"], reverse=True)
             summary["files"] = anchor_files[:limit_per_anchor]
+            summary["recording_sessions"] = group_recordings(
+                [item for item in anchor_files if item["source"] == "recording" and item["kind"] in {"video", "audio"}]
+            )
         return {
             "root": str(root),
             "anchors": anchor_list,

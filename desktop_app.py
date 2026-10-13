@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_recorder_anchor_name
-from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, scan_recordings
+from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -555,6 +555,19 @@ def make_handler(state: AppState, token: str):
                     else:
                         subprocess.Popen(["xdg-open", str(folder)])
                     self._json({"ok": True})
+                elif path == "/api/media/merge":
+                    group_id = str(body.get("group_id", "")).strip()
+                    groups = state.recording_archive_groups()
+                    group = next((item for item in groups if item.get("id") == group_id), None)
+                    if not group:
+                        raise ValueError("找不到该场直播，请刷新媒体库后重试")
+                    output_root = state.output_path().resolve()
+                    group_path = Path(group_id).resolve()
+                    if group_path != output_root and output_root not in group_path.parents:
+                        raise ValueError("录像不在当前保存目录中")
+                    merged = merge_recording_group(group)
+                    state._recordings.invalidate()
+                    self._json({"merged": merged})
                 elif path == "/api/auth/douyin":
                     state.recorder.set_douyin_cookie(str(body.get("cookie", "")))
                     state.interaction.set_auth(
