@@ -21,6 +21,7 @@ from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_recorder_anchor_name
 from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
+from desktop_integrity import MediaIntegrityStore
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -127,6 +128,7 @@ class AppState:
         self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._recording_candidates: dict[str, dict] = {}
         self._recordings = RecentRecordingCache()
+        self.integrity = MediaIntegrityStore(PROJECT_ROOT / "config" / "media_integrity.json")
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log, resolve_anchor_id=self.anchors.find_id_by_name)
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
@@ -182,6 +184,10 @@ class AppState:
             ).start()
             return
         try:
+            integrity = self.integrity.inspect(str(candidate.get("save_file_path") or ""))
+            if integrity.get("status") == "failed":
+                self.recorder._append_log(f"桌面控制台：录像完整性检查失败，已阻止自动上传：{integrity.get('error')}")
+                return
             self.uploads.enqueue_recording(
                 str(candidate.get("save_file_path") or ""),
                 record_name=str(candidate.get("record_name") or ""),
@@ -216,6 +222,9 @@ class AppState:
                 )), None)
             if group and int(group.get("segment_count") or 0) > 1:
                 merged = group.get("merged_file") or merge_recording_group(group, minimum_age_seconds=0)
+                integrity = self.integrity.inspect(str(merged.get("path") or ""))
+                if integrity.get("status") == "failed":
+                    raise RuntimeError(f"完整文件校验失败：{integrity.get('error')}")
                 self.uploads.replace_segments_with_merged(
                     str(merged.get("path") or ""),
                     [str(item.get("path") or "") for item in group.get("segments") or []],
@@ -241,7 +250,12 @@ class AppState:
                 self.recorder._append_log(f"桌面控制台：原分段加入上传队列失败：{upload_exc}")
 
     def media_library(self) -> dict:
-        return MediaLibrary(self.output_path()).scan()
+        library = MediaLibrary(self.output_path()).scan()
+        results = self.integrity.results()
+        for anchor in library.get("anchors", []):
+            for item in anchor.get("files", []):
+                item["integrity"] = results.get(str(Path(item["path"]).resolve()))
+        return library
 
     def check_anchors_live_status(self) -> dict:
         results = []
@@ -620,13 +634,23 @@ def make_handler(state: AppState, token: str):
                     if group_path != output_root and output_root not in group_path.parents:
                         raise ValueError("录像不在当前保存目录中")
                     merged = merge_recording_group(group)
+                    integrity = state.integrity.inspect(merged["path"])
+                    if integrity.get("status") == "failed":
+                        self._json({"merged": merged, "integrity": integrity, "archive": {"item": None, "archived": 0}})
+                        return
                     archive = state.uploads.replace_segments_with_merged(
                         merged["path"],
                         [str(item.get("path") or "") for item in group.get("segments") or []],
                         record_name=str(group.get("anchor") or ""),
                     )
                     state._recordings.invalidate()
-                    self._json({"merged": merged, "archive": archive})
+                    self._json({"merged": merged, "integrity": integrity, "archive": archive})
+                elif path == "/api/media/check":
+                    media_path = Path(str(body.get("path", ""))).resolve()
+                    output_root = state.output_path().resolve()
+                    if output_root not in media_path.parents:
+                        raise ValueError("只能检查当前录像目录中的文件")
+                    self._json({"integrity": state.integrity.inspect(str(media_path), force=True)})
                 elif path == "/api/auth/douyin":
                     state.recorder.set_douyin_cookie(str(body.get("cookie", "")))
                     state.interaction.set_auth(

@@ -24,6 +24,11 @@ class _Recorder:
         pass
 
 
+class _Integrity:
+    def inspect(self, _path):
+        return {"status": "healthy"}
+
+
 class AppStateRecordingUploadTest(unittest.TestCase):
     def test_concurrent_recordings_keep_separate_upload_candidates(self):
         state = AppState.__new__(AppState)
@@ -31,6 +36,7 @@ class AppStateRecordingUploadTest(unittest.TestCase):
         state.uploads = _Uploads()
         state.settings = _Settings()
         state.recorder = _Recorder()
+        state.integrity = _Integrity()
 
         state._on_recorder_log("主播甲 准备开始录制视频: /tmp/a.ts")
         state._on_recorder_log("主播乙 准备开始录制视频: /tmp/b.ts")
