@@ -205,6 +205,26 @@ class RecorderProcessTest(unittest.TestCase):
         self.assertEqual(["吐司"], list(states))
         self.assertEqual("waiting", states["吐司"]["state"])
 
+    def test_live_without_recording_is_marked_as_suspected_miss(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder.missed_recording_threshold = 0
+        recorder._append_log("主播甲 正在直播中")
+
+        status = recorder.status()
+
+        self.assertEqual("missed", status["room_states"]["主播甲"]["state"])
+        self.assertEqual("主播甲", status["missed_recordings"][0]["name"])
+
+    def test_recording_start_clears_suspected_miss(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder.missed_recording_threshold = 0
+        recorder._append_log("主播甲 正在直播中")
+        recorder.status()
+        recorder._append_log("主播甲 准备开始录制视频: /tmp/a.ts")
+
+        self.assertEqual("recording", recorder.status()["room_states"]["主播甲"]["state"])
+        self.assertFalse(recorder.status()["room_states"]["主播甲"]["suspected_missed"])
+
     def test_douyin_session_is_kept_in_memory(self):
         recorder = RecorderProcess(Path.cwd())
         self.assertFalse(recorder.has_douyin_session)

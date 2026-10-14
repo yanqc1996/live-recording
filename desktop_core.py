@@ -300,6 +300,8 @@ class RecorderProcess:
         self._restart_attempts = 0
         self._last_exit_code: int | None = None
         self._restart_timer: threading.Timer | None = None
+        self._missed_incidents: deque[dict] = deque(maxlen=100)
+        self.missed_recording_threshold = 120
 
     def set_douyin_cookie(self, cookie: str) -> None:
         """Keep the browser session in memory and pass it only to the recorder child."""
@@ -326,13 +328,16 @@ class RecorderProcess:
             name = normalize_recorder_anchor_name(started.group("name"))
             key = (self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name
             self._room_state_keys[name] = key
+            previous = self._room_states.get(key, {})
             self._room_states[key] = {
+                **previous,
                 "anchor_id": key if key != name else "",
                 "name": name,
                 "state": "recording",
                 "started_at": time.time(),
                 "path": started.group("path").strip(),
                 "updated_at": time.time(),
+                "suspected_missed": False,
             }
             return
         completed = re.search(
@@ -364,8 +369,26 @@ class RecorderProcess:
                     "anchor_id": key if key != name else "",
                     "name": name,
                     "state": "live",
+                    "live_detected_at": previous.get("live_detected_at") or time.time(),
                     "updated_at": time.time(),
                 }
+
+    def _refresh_missed_recordings(self) -> None:
+        now = time.time()
+        for key, state in self._room_states.items():
+            detected_at = float(state.get("live_detected_at") or 0)
+            if state.get("state") != "live" or not detected_at or now - detected_at < self.missed_recording_threshold:
+                continue
+            state.update({"state": "missed", "suspected_missed": True, "suspected_at": now, "updated_at": now})
+            incident = {
+                "anchor_id": state.get("anchor_id") or key,
+                "name": state.get("name") or key,
+                "detected_at": detected_at,
+                "suspected_at": now,
+                "reason": "检测到开播后未在规定时间内开始录制",
+            }
+            self._missed_incidents.append(incident)
+            self._append_log(f"桌面控制台：疑似漏录：{incident['name']} 已开播但尚未开始写入录像")
 
     def preflight(self) -> list[str]:
         missing = []
@@ -484,6 +507,7 @@ class RecorderProcess:
         return self.process is not None and self.process.poll() is None
 
     def status(self) -> dict:
+        self._refresh_missed_recordings()
         return {
             "running": self.is_running,
             "pid": self.process.pid if self.is_running and self.process else None,
@@ -496,6 +520,7 @@ class RecorderProcess:
                 "last_exit_code": self._last_exit_code,
                 "recovering": bool(self._desired_running and not self.is_running),
             },
+            "missed_recordings": list(self._missed_incidents),
         }
 
     @staticmethod

@@ -20,7 +20,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
     if (!anchorLiveUrl(anchor)) return 'error';
     if (anchor.enabled_recording === false) return 'paused';
     const runtime = roomStates[anchor.id]?.state;
-    if (runtime === 'recording' || runtime === 'live') return runtime;
+    if (runtime === 'recording' || runtime === 'live' || runtime === 'missed') return runtime;
     if (running) return 'waiting';
     return anchor.last_live_status || 'unknown';
   };
@@ -41,7 +41,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
       <Panel title="主播实时状态" badge={<Text c="dimmed" size="sm">每 4 秒刷新</Text>}>
         <div className="list roomStatusList">{state.anchors.length ? state.anchors.map(item => { const runtime=roomStates[item.id]; const status=displayState(item); return <div className={`listRow roomStatus ${status}`} key={item.id}>
           <Switch checked={item.enabled_recording !== false} disabled={running || busy || !anchorLiveUrl(item)} onChange={e => toggle(item, e.currentTarget.checked)} />
-          <div className="grow"><Group gap="xs"><span className="roomStateDot"/><Text fw={700}>{item.name}</Text><StatusBadge value={status} /></Group><Text size="xs" c="dimmed" truncate>{runtime?.path ? `正在写入：${runtime.path}` : status === 'waiting' ? '录制服务正在巡检，开播后会自动开始录制' : status === 'live' ? '已检测到开播，正在准备录制' : anchorLiveUrl(item) || '尚未解析直播间地址'}</Text>{runtime?.updated_at&&<Text size="xs" c="dimmed">状态更新：{new Date(runtime.updated_at*1000).toLocaleTimeString()}</Text>}</div>
+          <div className="grow"><Group gap="xs"><span className="roomStateDot"/><Text fw={700}>{item.name}</Text><StatusBadge value={status} /></Group><Text size="xs" c={status==='missed'?'red':'dimmed'} truncate>{runtime?.path ? `正在写入：${runtime.path}` : status === 'missed' ? '已检测到开播，但迟迟没有生成录像；系统仍会继续尝试' : status === 'waiting' ? '录制服务正在巡检，开播后会自动开始录制' : status === 'live' ? '已检测到开播，正在准备录制' : anchorLiveUrl(item) || '尚未解析直播间地址'}</Text>{runtime?.updated_at&&<Text size="xs" c="dimmed">状态更新：{new Date(runtime.updated_at*1000).toLocaleTimeString()}</Text>}</div>
           <Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>
         </div>}) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
         <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址，加入统一主播库" leftSection={<Plus size={16} />} flex={1} /><Button disabled={!room.trim()} onClick={addRoom}>添加</Button></Group>
