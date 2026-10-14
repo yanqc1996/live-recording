@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from desktop_core import RecorderProcess, RoomStore, SettingsStore
 from desktop_anchors import AnchorStore
@@ -168,6 +169,21 @@ class SettingsStoreTest(unittest.TestCase):
 
 
 class RecorderProcessTest(unittest.TestCase):
+    def test_unexpected_engine_exit_schedules_automatic_recovery(self):
+        recorder = RecorderProcess(Path.cwd())
+        process = MagicMock()
+        process.stdout = ["engine stopped\n"]
+        process.wait.return_value = 7
+        recorder.process = process
+        recorder._desired_running = True
+
+        with patch("desktop_core.threading.Timer") as timer:
+            recorder._read_output(process)
+
+        timer.assert_called_once()
+        self.assertEqual(1, recorder.status()["auto_recovery"]["restart_attempts"])
+        self.assertEqual(7, recorder.status()["auto_recovery"]["last_exit_code"])
+
     def test_recording_state_uses_canonical_anchor_id(self):
         recorder = RecorderProcess(Path.cwd(), resolve_anchor_id=lambda name: "anchor-123" if name == "主播甲" else None)
         recorder._append_log("主播甲 准备开始录制视频: /tmp/主播甲_001.ts")

@@ -296,6 +296,10 @@ class RecorderProcess:
         self._room_states: dict[str, dict] = {}
         self._room_state_keys: dict[str, str] = {}
         self._lock = threading.RLock()
+        self._desired_running = False
+        self._restart_attempts = 0
+        self._last_exit_code: int | None = None
+        self._restart_timer: threading.Timer | None = None
 
     def set_douyin_cookie(self, cookie: str) -> None:
         """Keep the browser session in memory and pass it only to the recorder child."""
@@ -375,6 +379,14 @@ class RecorderProcess:
         with self._lock:
             if self.is_running:
                 raise RuntimeError("录制服务已经在运行")
+            self._desired_running = True
+            self._restart_attempts = 0
+            self._launch()
+
+    def _launch(self) -> None:
+        with self._lock:
+            if self.is_running or not self._desired_running:
+                return
             self._room_states.clear()
             self._room_state_keys.clear()
             missing = self.preflight()
@@ -406,21 +418,49 @@ class RecorderProcess:
             )
             self.started_at = time.time()
             self._append_log("桌面控制台：录制服务已启动")
-            threading.Thread(target=self._read_output, daemon=True).start()
+            threading.Thread(target=self._read_output, args=(self.process,), daemon=True).start()
 
-    def _read_output(self) -> None:
-        process = self.process
+    def _read_output(self, process: subprocess.Popen[str]) -> None:
         if not process or not process.stdout:
             return
         for line in process.stdout:
             self._append_log(line)
         code = process.wait()
+        if self.process is not process:
+            return
+        self._last_exit_code = code
         for state in self._room_states.values():
             state.update({"state": "stopped", "updated_at": time.time()})
         self._append_log(f"桌面控制台：录制服务已退出（代码 {code}）")
+        with self._lock:
+            should_restart = self._desired_running
+            if should_restart:
+                self._restart_attempts += 1
+                delay = min(60, 2 ** min(self._restart_attempts, 5))
+                self._append_log(f"桌面控制台：录制服务异常中断，{delay} 秒后自动恢复（第 {self._restart_attempts} 次）")
+                self._restart_timer = threading.Timer(delay, self._restart_after_exit)
+                self._restart_timer.daemon = True
+                self._restart_timer.start()
+
+    def _restart_after_exit(self) -> None:
+        try:
+            self._launch()
+        except Exception as exc:
+            self._append_log(f"桌面控制台：录制服务自动恢复失败：{exc}")
+            with self._lock:
+                if self._desired_running:
+                    self._restart_attempts += 1
+                    delay = min(60, 2 ** min(self._restart_attempts, 5))
+                    self._restart_timer = threading.Timer(delay, self._restart_after_exit)
+                    self._restart_timer.daemon = True
+                    self._restart_timer.start()
 
     def stop(self) -> None:
         with self._lock:
+            self._desired_running = False
+            if self._restart_timer:
+                self._restart_timer.cancel()
+                self._restart_timer = None
             process = self.process
             if not process or process.poll() is not None:
                 return
@@ -450,6 +490,12 @@ class RecorderProcess:
             "started_at": self.started_at if self.is_running else None,
             "missing_dependencies": self.preflight(),
             "room_states": {anchor_id: dict(value) for anchor_id, value in self._room_states.items()},
+            "auto_recovery": {
+                "enabled": self._desired_running,
+                "restart_attempts": self._restart_attempts,
+                "last_exit_code": self._last_exit_code,
+                "recovering": bool(self._desired_running and not self.is_running),
+            },
         }
 
     @staticmethod
