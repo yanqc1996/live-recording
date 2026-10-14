@@ -24,6 +24,7 @@ from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_recorder_anchor_name
 from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
 from desktop_integrity import MediaIntegrityStore
+from desktop_gifts import GiftLedger
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -36,17 +37,18 @@ BUILD_COMMIT = os.environ.get("BOLU_BUILD_COMMIT", "").strip()
 
 
 class LazyDouyinInteraction:
-    def __init__(self):
+    def __init__(self, on_event=None):
         self._manager = None
         self._cookie = ""
         self._security: dict = {}
         self._anonymous_live_access = True
+        self._on_event = on_event
 
     def _load(self):
         if self._manager is None:
             from desktop_douyin import DouyinInteractionManager
 
-            self._manager = DouyinInteractionManager()
+            self._manager = DouyinInteractionManager(on_event=self._on_event)
             if self._cookie or self._security:
                 self._manager.set_auth(self._cookie, self._security, self._anonymous_live_access)
         return self._manager
@@ -132,7 +134,8 @@ class AppState:
         self._recordings = RecentRecordingCache()
         self.integrity = MediaIntegrityStore(PROJECT_ROOT / "config" / "media_integrity.json")
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log, resolve_anchor_id=self.anchors.find_id_by_name)
-        self.interaction = LazyDouyinInteraction()
+        self.gifts = GiftLedger(PROJECT_ROOT / "config" / "gift_ledger.json")
+        self.interaction = LazyDouyinInteraction(on_event=self.gifts.record)
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
         self._last_upload_reconcile = 0.0
         self._disk_stop_triggered = False
@@ -429,6 +432,7 @@ def make_handler(state: AppState, token: str):
                         "baidupan": state.uploads.status(),
                         "update": state.updates.status(),
                         "interaction": state.interaction.status(),
+                        "gifts": state.gifts.stats(),
                         "work_pull": state.work_pull.status(),
                         "recordings": recordings,
                         "recording_groups": group_recordings(recordings),
@@ -740,9 +744,12 @@ def make_handler(state: AppState, token: str):
                     state.interaction.set_live_access_mode(bool(body.get("anonymous", True)))
                     self._json({"interaction": state.interaction.status()})
                 elif path == "/api/interaction/start":
+                    anchor = state.anchors.get(str(body["anchor_id"])) if body.get("anchor_id") else {"id": "", "name": "临时直播间"}
                     room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
+                    state.gifts.begin(anchor, room_url)
                     self._json({"interaction": state.interaction.start_listening(room_url)})
                 elif path == "/api/interaction/stop":
+                    state.gifts.end()
                     self._json({"interaction": state.interaction.stop_listening()})
                 elif path == "/api/interaction/send":
                     self._json(state.interaction.send_chat(str(body.get("content", ""))))
@@ -761,6 +768,10 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/interaction/gift-rank":
                     room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
                     self._json({"gift_rank": state.interaction.gift_rank(room_url)})
+                elif path == "/api/gifts/price":
+                    self._json({"gifts": state.gifts.set_price(
+                        str(body.get("gift_id") or ""), str(body.get("gift_name") or ""), int(body.get("value") or 0),
+                    )})
                 elif path == "/api/douyin/resolve-live-room":
                     self._json({"live_room": state.interaction.resolve_live_room(str(body.get("url", "")))})
                 elif path == "/api/work-pull/start":

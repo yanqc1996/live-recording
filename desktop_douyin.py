@@ -39,6 +39,64 @@ UA = (
 )
 
 
+def _protobuf_wire_fields(payload: bytes) -> dict[int, list[object]]:
+    """Read the small protobuf subset needed for extra gift metadata."""
+    fields: dict[int, list[object]] = {}
+    offset = 0
+
+    def read_varint(position: int) -> tuple[int, int]:
+        value = 0
+        shift = 0
+        while position < len(payload) and shift < 70:
+            byte = payload[position]
+            position += 1
+            value |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                return value, position
+            shift += 7
+        raise ValueError("invalid protobuf varint")
+
+    while offset < len(payload):
+        key, offset = read_varint(offset)
+        number, wire_type = key >> 3, key & 7
+        if not number:
+            break
+        if wire_type == 0:
+            value, offset = read_varint(offset)
+        elif wire_type == 1:
+            value, offset = payload[offset:offset + 8], offset + 8
+        elif wire_type == 2:
+            size, offset = read_varint(offset)
+            value, offset = payload[offset:offset + size], offset + size
+        elif wire_type == 5:
+            value, offset = payload[offset:offset + 4], offset + 4
+        else:
+            break
+        fields.setdefault(number, []).append(value)
+    return fields
+
+
+def _gift_wire_metadata(payload: bytes) -> dict:
+    try:
+        fields = _protobuf_wire_fields(payload)
+        gift_payload = next((value for value in fields.get(15, []) if isinstance(value, bytes)), b"")
+        gift_fields = _protobuf_wire_fields(gift_payload) if gift_payload else {}
+        name_value = next((value for value in gift_fields.get(16, []) if isinstance(value, bytes)), b"")
+        gift_id_value = next(iter(fields.get(2, [])), "")
+        if isinstance(gift_id_value, bytes):
+            gift_id_value = gift_id_value.decode("utf-8", errors="ignore")
+        return {
+            "gift_id": str(gift_id_value or next(iter(gift_fields.get(5, [])), "")),
+            "gift_name": name_value.decode("utf-8", errors="ignore"),
+            "repeat_count": int(next(iter(fields.get(5, [])), 0) or 0),
+            "combo_count": int(next(iter(fields.get(6, [])), 0) or 0),
+            "repeat_end": bool(next(iter(fields.get(9, [])), 0)),
+            "diamond_count": int(next(iter(gift_fields.get(12, [])), 0) or 0),
+        }
+    except (TypeError, ValueError, IndexError):
+        return {}
+
+
 def _audio_relay_command(ffmpeg: str, source_url: str) -> list[str]:
     return [
         ffmpeg,
@@ -978,10 +1036,20 @@ class DouyinLiveSession:
         elif item.method == "WebcastGiftMessage":
             msg = Live_pb2.GiftMessage()
             msg.ParseFromString(item.payload)
+            wire = _gift_wire_metadata(item.payload)
+            gift_id = str(msg.giftId or msg.gift.id or wire.get("gift_id") or "")
+            gift_name = str(msg.gift.name or wire.get("gift_name") or "未知礼物")
+            combo_count = int(msg.comboCount or wire.get("combo_count") or wire.get("repeat_count") or 1)
             self.on_event({
                 "type": "gift",
                 "user": _user_to_dict(msg.user),
-                "content": f"送出 {msg.gift.name} x {msg.comboCount}",
+                "message_id": str(getattr(item, "msgId", "") or ""),
+                "gift_id": gift_id,
+                "gift_name": gift_name,
+                "combo_count": combo_count,
+                "repeat_end": bool(wire.get("repeat_end")),
+                "diamond_count": int(wire.get("diamond_count") or 0),
+                "content": f"送出 {gift_name} x {combo_count}",
             })
         elif item.method == "WebcastSocialMessage":
             msg = Live_pb2.SocialMessage()
@@ -998,7 +1066,7 @@ class DouyinLiveSession:
 
 
 class DouyinInteractionManager:
-    def __init__(self):
+    def __init__(self, on_event=None):
         self._lock = threading.RLock()
         self._auth = DouyinAuthState.from_cookie("")
         self._anonymous_auth = DouyinAuthState.from_cookie("")
@@ -1011,6 +1079,7 @@ class DouyinInteractionManager:
         self._audio_process: subprocess.Popen[bytes] | None = None
         self._audio_source_url = ""
         self._audio_stream_id = ""
+        self._event_callback = on_event
 
     def set_auth(self, cookie: str, security: dict | None = None, anonymous_live_access: bool = True) -> None:
         self.stop_audio()
@@ -1050,6 +1119,11 @@ class DouyinInteractionManager:
             if self._events.maxlen and len(self._events) == self._events.maxlen:
                 self._offset += 1
             self._events.append(event)
+        if self._event_callback:
+            try:
+                self._event_callback(dict(event))
+            except Exception:
+                pass
 
     def events(self, cursor: int = 0) -> dict:
         with self._lock:

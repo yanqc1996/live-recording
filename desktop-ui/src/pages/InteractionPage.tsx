@@ -1,5 +1,5 @@
-import { Button, Group, Select, Switch, Text, TextInput } from '@mantine/core';
-import { Headphones, MessageCircle, Play, Radio, Send, Square, Trash2 } from 'lucide-react';
+import { Badge, Button, Group, NumberInput, Select, SimpleGrid, Switch, Text, TextInput } from '@mantine/core';
+import { Gift, Headphones, MessageCircle, Play, Radio, Send, Square, Trash2, Waves } from 'lucide-react';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { Empty, PageGrid, Panel, anchorLiveUrl } from '../components';
@@ -10,11 +10,17 @@ export function InteractionPage({ state, refresh, notify, activeAnchorId, setAct
   const selectedAnchor = state.anchors.find(anchor => anchor.id === activeAnchorId);
   const room = anchorLiveUrl(selectedAnchor);
   const [message, setMessage] = useState(''); const [rank, setRank] = useState<any[]>([]); const [workMode, setWorkMode] = useState(localStorage.getItem('liveRecorderWorkMode') === '1');
+  const [giftPrices, setGiftPrices] = useState<Record<string, number | string>>({});
   const feed = useRef<HTMLDivElement>(null); const listening = !!state.interaction?.listening;
   useEffect(() => { if (feed.current) feed.current.scrollTop = feed.current.scrollHeight; }, [events]);
   const act = async (fn: () => Promise<any>, success?: string) => { try { const data = await fn(); await refresh(); if (success) notify(success); return data; } catch (e) { notify((e as Error).message, true); } };
   const send = async (e: FormEvent) => { e.preventDefault(); await act(() => api('/api/interaction/send', { content: message }), '弹幕已提交'); setMessage(''); };
   const playingAnchor = state.anchors.find(anchor => anchor.id === audioAnchorId);
+  const gifts = state.gifts || {}; const giftItems = (gifts.gifts || []) as any[];
+  const saveGiftPrice = async (item: any) => {
+    const key = String(item.gift_id || item.name); const value = Number(giftPrices[key] ?? item.unit_value ?? 0);
+    await act(() => api('/api/gifts/price', { gift_id: item.gift_id, gift_name: item.name, value }), '礼物音浪已更新');
+  };
   return <PageGrid>
     <div className="column">
       <Panel title="直播间控制" badge={<Text size="sm" c={listening ? 'green' : 'dimmed'}>{listening ? '监听中' : '未监听'}</Text>}>
@@ -23,6 +29,16 @@ export function InteractionPage({ state, refresh, notify, activeAnchorId, setAct
       </Panel>
       <Panel title="只听直播声音" badge={<Headphones size={17} />}>
         <Group mb="sm"><Button variant="light" disabled={!activeAnchorId || (audioPlaying && audioAnchorId === activeAnchorId)} onClick={() => startAudio(activeAnchorId)}>{audioPlaying && audioAnchorId !== activeAnchorId ? '切换到当前主播' : '播放声音'}</Button><Button variant="subtle" disabled={!audioPlaying} onClick={() => stopAudio().catch(e => notify((e as Error).message, true))}>停止声音</Button></Group><Text c={audioPlaying ? 'green' : 'dimmed'} size="sm">{audioPlaying ? `正在播放：${playingAnchor?.name || '直播声音'}；切换到其他页面会继续播放。` : '声音会在全局播放器中播放，切换页面不会中断。'}</Text>
+      </Panel>
+      <Panel title="本场礼物与音浪" badge={<Group gap={5}><Gift size={15} /><Text size="sm">{gifts.gift_count || 0}</Text></Group>}>
+        <SimpleGrid cols={3} spacing="sm">
+          <div className="stat"><Text size="xl" fw={850}>{gifts.gift_count || 0}</Text><Text size="xs" c="dimmed">礼物数量</Text></div>
+          <div className="stat"><Text size="xl" fw={850}>{gifts.sound_wave || 0}</Text><Text size="xs" c="dimmed">预估音浪</Text></div>
+          <div className="stat"><Text size="xl" fw={850}>{gifts.donor_count || 0}</Text><Text size="xs" c="dimmed">送礼用户</Text></div>
+        </SimpleGrid>
+        {gifts.unknown_count > 0 && <Text size="xs" c="orange" mt="sm">有 {gifts.unknown_count} 个礼物尚无价值数据，可在下方补充单个礼物的音浪。</Text>}
+        {!workMode && <div className="list" style={{marginTop: 10}}>{giftItems.length ? giftItems.map(item => { const key=String(item.gift_id||item.name); return <div className="listRow" key={key}><div className="grow"><Group gap="xs"><Text fw={750}>{item.name}</Text><Badge size="sm" variant="light">× {item.quantity}</Badge></Group><Text size="xs" c="dimmed">合计 {item.sound_wave || 0} 音浪{item.value_known ? '' : ' · 待补充价值'}</Text></div><NumberInput w={112} size="xs" min={0} allowDecimal={false} value={giftPrices[key] ?? item.unit_value ?? 0} onChange={value=>setGiftPrices(current=>({...current,[key]:value}))} leftSection={<Waves size={13}/>} onBlur={()=>saveGiftPrice(item)} aria-label={`${item.name}单个音浪`} /></div> }) : <Empty>开始监听后，礼物流水会按主播和本场直播保存</Empty>}</div>}
+        <Text size="xs" c="dimmed" mt="sm">音浪优先采用直播消息中的礼物价值；缺失时使用你维护的估值。统计监听保持匿名模式，结果仅保存在本机。</Text>
       </Panel>
       {!workMode && <Panel title="礼物贡献榜" actions={<Button size="xs" variant="subtle" onClick={async () => { const data = await act(() => api<any>('/api/interaction/gift-rank', { anchor_id: activeAnchorId })); setRank(data?.gift_rank?.users || data?.gift_rank?.ranks || []); }}>刷新榜单</Button>}>
         {rank.length ? rank.map((item, i) => <div className="listRow" key={item.user?.id || i}><Text fw={800} w={24}>{i + 1}</Text><div className="grow"><Text>{item.user?.nickname || item.nickname || '匿名用户'}</Text><Text size="xs" c="dimmed">{item.score || item.value || ''}</Text></div></div>) : <Empty>刷新后显示当前贡献榜</Empty>}
