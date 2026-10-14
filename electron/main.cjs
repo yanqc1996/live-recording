@@ -7,7 +7,9 @@ const { LOGIN_COOKIE_NAMES, parseCookieHeader } = require('./douyin-cookie.cjs')
 const DOUYIN_PARTITION = 'persist:douyin-auth';
 const DOUYIN_LOGIN_URL = 'https://www.douyin.com/';
 
-app.setName('播录助手');
+// Keep the existing data location while presenting a discreet English app name.
+app.setPath('userData', path.join(app.getPath('appData'), '播录助手'));
+app.setName('Live Studio');
 
 let mainWindow = null;
 let loginWindow = null;
@@ -130,20 +132,20 @@ function processStateNotifications(state) {
       const before = notificationSnapshot.rooms[anchorId];
       const name = room.name || anchorId;
       if (room.state === 'recording' && before !== 'recording') {
-        showSystemNotification('主播已开播，开始录制', `${name}${room.path ? `\n${path.basename(room.path)}` : ''}`);
+        showSystemNotification('Live session detected', `Recording ${name}${room.path ? `\n${path.basename(room.path)}` : ''}`);
       } else if (before === 'recording' && room.state !== 'recording') {
-        showSystemNotification('直播录制已结束', `${name}的录像已经保存并进入后续处理。`);
+        showSystemNotification('Recording completed', `${name} was saved and queued for processing.`);
       }
     }
   }
   for (const item of queue) {
     const before = notificationSnapshot.uploads[item.id];
     if (!before || before === item.status) continue;
-    const name = item.record_name || path.basename(item.save_file_path || '') || '录像文件';
+    const name = item.record_name || path.basename(item.save_file_path || '') || 'Recording';
     if (item.status === 'success' && settings.notify_upload) {
-      showSystemNotification('百度网盘归档完成', `${name}已成功上传。`);
+      showSystemNotification('Cloud archive completed', `${name} was uploaded successfully.`);
     } else if (item.status === 'failed' && settings.notify_errors) {
-      showSystemNotification('百度网盘上传失败', `${name}上传失败，可在上传队列中重试。`);
+      showSystemNotification('Cloud upload failed', `${name} can be retried from the upload queue.`);
     }
   }
   notificationSnapshot = next;
@@ -298,9 +300,9 @@ function startBackend() {
         reject(new Error(message));
       }
     };
-    backend.on('error', (error) => fail(`无法启动 Python 录制引擎：${error.message}`));
+    backend.on('error', (error) => fail(`Unable to start the recording engine: ${error.message}`));
     backend.on('exit', (code) => {
-      if (!quitting) fail(`录制引擎意外退出（${code ?? 'unknown'}）`);
+      if (!quitting) fail(`Recording engine exited unexpectedly (${code ?? 'unknown'})`);
     });
     backend.stdout.on('data', (chunk) => {
       const output = chunk.toString();
@@ -315,29 +317,29 @@ function startBackend() {
         if (/^http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+$/.test(url)) finish(url);
       } catch {}
     }, 150);
-    timeout = setTimeout(() => fail('内置录制引擎启动超时，请重新启动应用'), 45000);
+    timeout = setTimeout(() => fail('Recording engine startup timed out. Please restart the app.'), 45000);
   });
 }
 
 async function postBackend(pathname, body) {
-  if (!backendUrl) throw new Error('录制引擎尚未就绪');
+  if (!backendUrl) throw new Error('Recording engine is not ready');
   const origin = new URL(backendUrl).origin;
   const response = await fetch(`${origin}${pathname}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-LiveRecorder-Token': backendToken },
     body: JSON.stringify(body)
   });
-  if (!response.ok) throw new Error((await response.json()).error || '本地服务请求失败');
+  if (!response.ok) throw new Error((await response.json()).error || 'Local service request failed');
   return response.json();
 }
 
 async function backendState() {
-  if (!backendUrl) throw new Error('录制引擎尚未就绪');
+  if (!backendUrl) throw new Error('Recording engine is not ready');
   const origin = new URL(backendUrl).origin;
   const response = await fetch(`${origin}/api/state`, {
     headers: { 'X-LiveRecorder-Token': backendToken }
   });
-  if (!response.ok) throw new Error((await response.json()).error || '无法读取本地服务状态');
+  if (!response.ok) throw new Error((await response.json()).error || 'Unable to read local service status');
   return response.json();
 }
 
@@ -347,7 +349,7 @@ async function ensureAutomaticRecording() {
   const state = await backendState();
   if (state.status?.running) return true;
   if (!(state.anchors || []).some((anchor) => anchor.enabled_recording !== false && (anchor.live_url || anchor.web_rid))) {
-    throw new Error('自动录制已开启，但没有启用且已解析直播间的主播');
+    throw new Error('Automatic recording is enabled, but no creator has a resolved live room');
   }
   await postBackend('/api/start', { settings: state.settings || {} });
   return true;
@@ -387,14 +389,14 @@ function rebuildTrayMenu() {
   const uploads = trayState?.baidupan || {};
   const uploading = Array.isArray(uploads.progresses) ? uploads.progresses.length : 0;
   const pending = Number(uploads.pending || 0);
-  tray.setToolTip(recording ? `播录助手 · ${recordingRooms || '正在'}录制` : '播录助手 · 后台待机');
+  tray.setToolTip(recording ? `Live Studio · Recording ${recordingRooms || ''}`.trim() : 'Live Studio · Background idle');
   if (process.platform === 'darwin') tray.setTitle(recording ? ' ●' : '');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: recording ? `● 正在录制${recordingRooms ? ` · ${recordingRooms} 个直播间` : ''}` : '○ 录制服务待机', enabled: false },
-    { label: uploading ? `网盘上传中 · ${uploading} 个文件` : pending ? `网盘队列 · ${pending} 个任务` : '网盘队列空闲', enabled: false },
+    { label: recording ? `● Recording${recordingRooms ? ` · ${recordingRooms} rooms` : ''}` : '○ Recorder idle', enabled: false },
+    { label: uploading ? `Cloud upload · ${uploading} files` : pending ? `Upload queue · ${pending} tasks` : 'Upload queue idle', enabled: false },
     { type: 'separator' },
     {
-      label: recording ? '停止录制并保存' : '开始自动录制',
+      label: recording ? 'Stop & Save' : 'Start Automatic Recording',
       click: async () => {
         try {
           if (recording) await postBackend('/api/stop', {});
@@ -404,15 +406,15 @@ function rebuildTrayMenu() {
           }
           await refreshTray();
         } catch (error) {
-          dialog.showErrorBox('录制操作失败', error.message);
+          dialog.showErrorBox('Recording action failed', error.message);
         }
       }
     },
-    { label: '打开小窗控制', click: () => openCompactWindow().catch((error) => dialog.showErrorBox('无法打开小窗', error.message)) },
-    { label: '打开播录助手', click: showMainWindow },
-    { label: '隐藏窗口', enabled: Boolean(mainWindow?.isVisible()), click: hideMainWindow },
+    { label: 'Open Mini Controls', click: () => openCompactWindow().catch((error) => dialog.showErrorBox('Unable to open mini controls', error.message)) },
+    { label: 'Open Live Studio', click: showMainWindow },
+    { label: 'Hide Window', enabled: Boolean(mainWindow?.isVisible()), click: hideMainWindow },
     { type: 'separator' },
-    { label: '退出播录助手', click: () => app.quit() }
+    { label: 'Quit Live Studio', click: () => app.quit() }
   ]));
 }
 
@@ -585,7 +587,7 @@ function createLoginWindow() {
     height: 760,
     minWidth: 760,
     minHeight: 600,
-    title: '登录抖音账号',
+    title: 'Sign in to Douyin',
     parent: mainWindow,
     autoHideMenuBar: true,
     webPreferences: {
@@ -699,13 +701,13 @@ function registerIpc() {
   ipcMain.handle('shell:open-external', async (event, rawUrl) => {
     validateMainSender(event);
     const url = new URL(String(rawUrl || ''));
-    if (url.protocol !== 'https:') throw new Error('只允许打开 HTTPS 链接');
+    if (url.protocol !== 'https:') throw new Error('Only HTTPS links are allowed');
     await shell.openExternal(url.toString());
     return { ok: true };
   });
   ipcMain.handle('window:compact-mode', (event, enabled) => {
     validateMainSender(event);
-    if (!mainWindow) throw new Error('主窗口尚未就绪');
+    if (!mainWindow) throw new Error('Main window is not ready');
     const compact = Boolean(enabled);
     if (compact) {
       if (!normalWindowBounds) normalWindowBounds = mainWindow.getBounds();
@@ -732,7 +734,7 @@ async function createMainWindow() {
     height: 840,
     minWidth: 940,
     minHeight: 680,
-    title: '播录助手',
+    title: 'Live Studio',
     backgroundColor: '#0b0d11',
     show: false,
     autoHideMenuBar: true,
@@ -758,10 +760,10 @@ async function createMainWindow() {
     saveWindowState({ backgroundCloseHintShown: true });
     dialog.showMessageBox({
       type: 'info',
-      title: '播录助手已在后台运行',
-      message: '窗口已隐藏，当前任务不会中断',
-      detail: '录制、直播音频和弹幕监听会继续运行。可从顶部菜单栏图标重新打开或控制录制；如需完全退出，请按 ⌘Q。',
-      buttons: ['知道了'],
+      title: 'Live Studio is running in the background',
+      message: 'The window is hidden and active tasks will continue',
+      detail: 'Recording, live audio, and monitoring continue in the background. Use the menu bar icon to reopen the app, or press ⌘Q to quit completely.',
+      buttons: ['OK'],
       defaultId: 0,
       noLink: true
     }).catch((error) => console.error(error));
@@ -791,19 +793,19 @@ else {
       await syncDouyinSession();
       createTray();
       ensureAutomaticRecording().catch((error) => {
-        console.error(`自动开始录制失败：${error.message}`);
-        if (loadBackgroundSettings().notify_errors) showSystemNotification('自动录制未能启动', error.message);
+        console.error(`Automatic recording failed: ${error.message}`);
+        if (loadBackgroundSettings().notify_errors) showSystemNotification('Automatic recording failed', error.message);
       });
     } catch (error) {
       console.error(error);
-      dialog.showErrorBox('播录助手启动失败', error.message);
+      dialog.showErrorBox('Live Studio failed to start', error.message);
       app.quit();
     }
     powerMonitor.on('resume', () => {
       setTimeout(() => {
         ensureAutomaticRecording().catch((error) => {
-          console.error(`唤醒后恢复录制失败：${error.message}`);
-          if (loadBackgroundSettings().notify_errors) showSystemNotification('唤醒后恢复录制失败', error.message);
+          console.error(`Recording recovery after wake failed: ${error.message}`);
+          if (loadBackgroundSettings().notify_errors) showSystemNotification('Recording recovery after wake failed', error.message);
         });
         refreshTray().catch(() => {});
       }, 2500);
@@ -837,10 +839,10 @@ app.on('before-quit', (event) => {
     if (recording) {
       const options = {
         type: 'warning',
-        title: '正在录制直播',
-        message: '退出前需要先停止录制并保存视频',
-        detail: '保存和封装可能需要几秒钟，完成后应用会自动退出。',
-        buttons: ['停止录制并退出', '继续使用'],
+        title: 'Live recording in progress',
+        message: 'Recording must stop and save before quitting',
+        detail: 'Finalizing may take a few seconds. The app will quit automatically afterward.',
+        buttons: ['Stop, Save & Quit', 'Keep Running'],
         defaultId: 1,
         cancelId: 1,
         noLink: true
@@ -855,7 +857,7 @@ app.on('before-quit', (event) => {
       try {
         await postBackend('/api/stop', {});
       } catch (error) {
-        dialog.showErrorBox('无法安全停止录制', `${error.message}\n\n请在主界面停止录制后再退出。`);
+        dialog.showErrorBox('Unable to stop safely', `${error.message}\n\nStop the recording from the main window, then quit again.`);
         quitCheckInProgress = false;
         return;
       }

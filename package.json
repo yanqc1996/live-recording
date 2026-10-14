@@ -2,7 +2,7 @@
   "name": "live-recorder-desktop",
   "version": "0.1.21",
   "private": true,
-  "description": "播录助手本地桌面应用",
+  "description": "Local live recording workspace",
   "main": "electron/main.cjs",
   "scripts": {
     "ui:dev": "vite --config vite.config.ts",
@@ -25,7 +25,7 @@
   },
   "build": {
     "appId": "com.boluzhushou.desktop",
-    "productName": "播录助手",
+    "productName": "Live Studio",
     "asar": true,
     "files": [
       "electron/**/*",
