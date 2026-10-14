@@ -28,3 +28,4 @@ export async function api<T = any>(path: string, body?: unknown, method = body =
 }
 
 export const audioStreamUrl = (id: string) => `/api/interaction/audio-stream?token=${encodeURIComponent(token)}&id=${encodeURIComponent(id)}`;
+export const mediaPreviewUrl = (path: string) => `/api/media/preview?token=${encodeURIComponent(token)}&path=${encodeURIComponent(path)}`;
