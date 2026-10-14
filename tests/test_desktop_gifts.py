@@ -55,3 +55,15 @@ class GiftLedgerTest(unittest.TestCase):
             stats = ledger.set_price("g2", "神秘礼物", 5)
             self.assertEqual(stats["unknown_count"], 0)
             self.assertEqual(stats["sound_wave"], 10)
+
+    def test_stats_report_value_sources_and_filter_recording_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = GiftLedger(Path(directory) / "gift_ledger.json")
+            context = ledger.begin({"id": "anchor-1", "name": "主播"}, "room")
+            base = {"type": "gift", "gift_id": "g1", "gift_name": "玫瑰", "user": {"id": "u1", "nickname": "观众"}}
+            ledger.record({**base, "message_id": "m1", "combo_count": 1, "diamond_count": 2, "time": 100}, context)
+            ledger.record({**base, "message_id": "m2", "gift_id": "g2", "combo_count": 1, "time": 200}, context)
+            stats = ledger.stats(anchor_name="主播", started_at=90, ended_at=150)
+            self.assertEqual(stats["gift_count"], 1)
+            self.assertEqual(stats["platform_count"], 1)
+            self.assertEqual(stats["coverage_percent"], 100)

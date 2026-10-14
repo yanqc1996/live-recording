@@ -35,19 +35,21 @@ class GiftLedger:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.path)
 
-    def begin(self, anchor: dict, room_url: str) -> dict:
+    def begin(self, anchor: dict, room_url: str, activate: bool = True) -> dict:
         with self._lock:
             now = time.time()
-            self._context = {
+            context = {
                 "session_id": uuid.uuid4().hex,
                 "anchor_id": str(anchor.get("id") or ""),
                 "anchor_name": str(anchor.get("name") or "未知主播"),
                 "room_url": room_url,
                 "started_at": now,
             }
-            self._seen.clear()
-            self._combos.clear()
-            return dict(self._context)
+            if activate:
+                self._context = context
+                self._seen.clear()
+                self._combos.clear()
+            return dict(context)
 
     def end(self) -> None:
         with self._lock:
@@ -55,11 +57,12 @@ class GiftLedger:
                 self._context["ended_at"] = time.time()
             self._combos.clear()
 
-    def record(self, event: dict) -> dict | None:
+    def record(self, event: dict, context: dict | None = None) -> dict | None:
         if event.get("type") != "gift":
             return None
         with self._lock:
-            if not self._context:
+            active_context = context or self._context
+            if not active_context:
                 return None
             message_id = str(event.get("message_id") or "")
             if message_id and message_id in self._seen:
@@ -71,7 +74,7 @@ class GiftLedger:
             gift_id = str(event.get("gift_id") or "")
             gift_name = str(event.get("gift_name") or "未知礼物")
             combo_count = max(1, int(event.get("combo_count") or 1))
-            combo_key = "|".join((str(user.get("id") or user.get("sec_uid") or user.get("nickname") or "anonymous"), gift_id or gift_name))
+            combo_key = "|".join((str(active_context.get("session_id") or ""), str(user.get("id") or user.get("sec_uid") or user.get("nickname") or "anonymous"), gift_id or gift_name))
             previous = self._combos.get(combo_key)
             quantity = combo_count
             if previous and now - previous[1] <= 20 and combo_count >= previous[0]:
@@ -90,7 +93,7 @@ class GiftLedger:
             configured = data["prices"].get(price_key) or data["prices"].get(gift_name) or {}
             unit_value = reported_price or max(0, int(configured.get("value") or 0))
             item = {
-                **self._context,
+                **active_context,
                 "time": now,
                 "message_id": message_id,
                 "gift_id": gift_id,
@@ -100,6 +103,7 @@ class GiftLedger:
                 "unit_value": unit_value,
                 "sound_wave": unit_value * quantity,
                 "value_known": bool(unit_value),
+                "value_source": "platform" if reported_price else "estimated" if unit_value else "unknown",
                 "user": {
                     "id": str(user.get("id") or ""),
                     "nickname": str(user.get("nickname") or "匿名用户"),
@@ -121,19 +125,26 @@ class GiftLedger:
             data = self._load()
             data["prices"][key] = {"name": gift_name or key, "value": int(value), "source": "manual"}
             for event in data["events"]:
-                if str(event.get("gift_id") or event.get("gift_name")) == key:
+                if str(event.get("gift_id") or event.get("gift_name")) == key and event.get("value_source") != "platform":
                     event["unit_value"] = int(value)
                     event["sound_wave"] = int(value) * int(event.get("quantity") or 0)
                     event["value_known"] = bool(value)
+                    event["value_source"] = "estimated" if value else "unknown"
             self._save(data)
             return self.stats()
 
-    def stats(self, anchor_id: str = "", session_id: str = "") -> dict:
+    def stats(self, anchor_id: str = "", session_id: str = "", anchor_name: str = "", started_at: float = 0, ended_at: float = 0) -> dict:
         with self._lock:
             data = self._load()
-            if not session_id and self._context and (not anchor_id or anchor_id == self._context.get("anchor_id")):
+            if not session_id and not anchor_name and not started_at and not ended_at and self._context and (not anchor_id or anchor_id == self._context.get("anchor_id")):
                 session_id = str(self._context.get("session_id") or "")
-            events = [item for item in data["events"] if (not anchor_id or item.get("anchor_id") == anchor_id) and (not session_id or item.get("session_id") == session_id)]
+            events = [item for item in data["events"] if
+                (not anchor_id or item.get("anchor_id") == anchor_id)
+                and (not anchor_name or item.get("anchor_name") == anchor_name)
+                and (not session_id or item.get("session_id") == session_id)
+                and (not started_at or float(item.get("time") or 0) >= started_at)
+                and (not ended_at or float(item.get("time") or 0) <= ended_at)
+            ]
             gifts: dict[str, dict] = {}
             users: dict[str, dict] = {}
             for item in events:
@@ -153,7 +164,10 @@ class GiftLedger:
                 "gift_count": sum(int(item.get("quantity") or 0) for item in events),
                 "event_count": len(events),
                 "sound_wave": sum(int(item.get("sound_wave") or 0) for item in events),
+                "platform_count": sum(int(item.get("quantity") or 0) for item in events if item.get("value_source") == "platform"),
+                "estimated_count": sum(int(item.get("quantity") or 0) for item in events if item.get("value_source") == "estimated"),
                 "unknown_count": sum(int(item.get("quantity") or 0) for item in events if not item.get("value_known")),
+                "coverage_percent": round(100 * sum(int(item.get("quantity") or 0) for item in events if item.get("value_known")) / max(1, sum(int(item.get("quantity") or 0) for item in events))),
                 "donor_count": len(users),
                 "gifts": sorted(gifts.values(), key=lambda item: (item["sound_wave"], item["quantity"]), reverse=True),
                 "users": sorted(users.values(), key=lambda item: (item["sound_wave"], item["quantity"]), reverse=True),

@@ -140,6 +140,8 @@ class AppState:
         self._last_upload_reconcile = 0.0
         self._disk_stop_triggered = False
         self._replay_candidates: dict[str, dict] = {}
+        self._gift_monitors: dict[str, object] = {}
+        self._gift_monitor_lock = threading.RLock()
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -169,14 +171,16 @@ class AppState:
                 "save_file_path": candidate_match.group("path").strip(),
                 "created_at": time.time(),
             }
+            threading.Thread(target=self._start_gift_monitor, args=(record_name,), daemon=True, name=f"gift-monitor-{record_name}").start()
             return
         if "直播录制完成" not in line:
             return
+        completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成", line.strip())
+        completed_name = normalize_recorder_anchor_name(completed_match.group("name")) if completed_match else ""
+        self._stop_gift_monitor(completed_name)
         config = self.uploads.load_config()
         if not (config.get("enabled") and config.get("auto_upload")):
             return
-        completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成", line.strip())
-        completed_name = normalize_recorder_anchor_name(completed_match.group("name")) if completed_match else ""
         candidate = self._recording_candidates.pop(completed_name, None)
         if not candidate and self._recording_candidates:
             candidate = max(self._recording_candidates.values(), key=lambda item: float(item.get("created_at") or 0))
@@ -205,6 +209,52 @@ class AppState:
             )
         except Exception as exc:
             self.recorder._append_log(f"桌面控制台：录制完成后加入百度网盘上传队列失败：{exc}")
+
+    def _start_gift_monitor(self, record_name: str) -> None:
+        if not hasattr(self, "anchors") or not hasattr(self, "_gift_monitor_lock"):
+            return
+        anchor_id = self.anchors.find_id_by_name(record_name)
+        if not anchor_id:
+            return
+        try:
+            anchor = self.anchors.get(anchor_id)
+            room_url = self.anchor_live_url(anchor_id)
+            with self._gift_monitor_lock:
+                if anchor_id in self._gift_monitors:
+                    return
+                context = self.gifts.begin(anchor, room_url)
+                from desktop_douyin import DouyinInteractionManager
+                manager = DouyinInteractionManager(on_event=lambda event, ctx=context: self.gifts.record(event, ctx))
+                self._gift_monitors[anchor_id] = manager
+            manager.start_listening(room_url)
+            self.recorder._append_log(f"桌面控制台：已自动开始 {record_name} 的礼物与音浪统计")
+        except Exception as exc:
+            with self._gift_monitor_lock:
+                self._gift_monitors.pop(anchor_id, None)
+            self.recorder._append_log(f"桌面控制台：{record_name} 礼物监听启动失败：{exc}")
+
+    def _stop_gift_monitor(self, record_name: str) -> None:
+        if not hasattr(self, "anchors") or not hasattr(self, "_gift_monitor_lock"):
+            return
+        anchor_id = self.anchors.find_id_by_name(record_name)
+        with self._gift_monitor_lock:
+            manager = self._gift_monitors.pop(anchor_id or "", None)
+        if manager:
+            try:
+                manager.stop_listening()
+                self.recorder._append_log(f"桌面控制台：已结束 {record_name} 的本场礼物统计")
+            except Exception:
+                pass
+
+    def stop_all_gift_monitors(self) -> None:
+        with self._gift_monitor_lock:
+            managers = list(self._gift_monitors.values())
+            self._gift_monitors.clear()
+        for manager in managers:
+            try:
+                manager.stop_listening()
+            except Exception:
+                pass
 
     def _merge_and_enqueue_completed_recording(self, candidate: dict, settings: dict) -> None:
         """Merge a completed split session before creating its sole upload task."""
@@ -262,6 +312,12 @@ class AppState:
         for anchor in library.get("anchors", []):
             for item in anchor.get("files", []):
                 item["integrity"] = results.get(str(Path(item["path"]).resolve()))
+            for session in anchor.get("recording_sessions", []):
+                session["gifts"] = self.gifts.stats(
+                    anchor_name=str(anchor.get("anchor") or ""),
+                    started_at=max(0, float(session.get("started_at") or 0) - 30),
+                    ended_at=float(session.get("latest_modified") or 0) + 300,
+                )
         return library
 
     def check_anchors_live_status(self) -> dict:
@@ -670,6 +726,7 @@ def make_handler(state: AppState, token: str):
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/stop":
                     state.recorder.stop()
+                    state.stop_all_gift_monitors()
                     state._recordings.invalidate()
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/open-output":
@@ -856,6 +913,7 @@ def main() -> None:
         state.recorder.stop()
         state.interaction.stop_audio()
         state.interaction.stop_listening()
+        state.stop_all_gift_monitors()
         server.server_close()
 
 
