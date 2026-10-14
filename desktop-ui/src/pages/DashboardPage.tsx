@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Button, Drawer, Group, Switch, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Drawer, Group, Switch, Text, TextInput, Tooltip } from '@mantine/core';
 import { Activity, FileCheck2, FolderOpen, Plus, Radio, Square, Trash2, TriangleAlert, Video } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../api';
@@ -34,6 +34,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
     return { type:'system', label:'系统', color:'gray', icon:<Activity size={16}/> };
   };
   return <PageGrid>
+    {state.storage?.level&&state.storage.level!=='healthy'&&<div className="wideColumn"><Alert color={state.storage.level==='critical'?'red':'yellow'} title={state.storage.level==='critical'?'磁盘空间已达到停止阈值':'磁盘空间不足'} icon={<TriangleAlert size={18}/>}>录像磁盘剩余 {state.storage.free_gb} GB；预警阈值 {state.storage.warning_gb} GB，停止阈值 {state.storage.stop_gb} GB。{state.storage.level==='critical'?' 系统会安全停止录制，释放空间后可重新启动。':' 建议清理已归档录像。'}</Alert></div>}
     <div className="wideColumn"><Panel title="录制总览" badge={<StatusBadge value={running ? recordingCount ? 'recording' : 'waiting' : 'stopped'} />} actions={<Group gap="xs"><Button size="xs" variant="subtle" leftSection={<Activity size={14}/>} onClick={()=>setLogsOpen(true)}>运行事件{logs.length ? ` · ${logs.length}` : ''}</Button><Button size="xs" leftSection={<Video size={15}/>} disabled={running || busy} loading={busy && !running} onClick={() => act(() => api('/api/start', { settings: state.settings }), '录制服务已启动')}>开始录制</Button><Button size="xs" color="red" variant="light" leftSection={<Square size={14}/>} disabled={!running || busy} loading={busy && running} onClick={() => act(() => api('/api/stop', {}), '录制已停止并保存')}>停止并保存</Button></Group>}>
       <div className="overviewRow"><div><Text fw={800} size="lg">{state.status?.auto_recovery?.recovering?'录制服务正在自动恢复':running ? recordingCount ? `正在录制 ${recordingCount} 位主播` : '监控运行中，等待主播开播' : '录制服务未启动'}</Text><Text c="dimmed" size="sm">{state.status?.auto_recovery?.recovering?`进程异常退出，正在进行第 ${state.status.auto_recovery.restart_attempts} 次恢复`:running ? '系统会持续巡检已启用主播，检测到开播后自动录制。' : '启动后会在后台自动巡检，不需要保持窗口打开。'}</Text></div><div className="recordingSummary"><div><strong>{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length}</strong><span>监控主播</span></div><div className="live"><strong>{activeCount}</strong><span>当前开播</span></div><div className="recording"><strong>{recordingCount}</strong><span>正在录制</span></div></div></div>
     </Panel></div>

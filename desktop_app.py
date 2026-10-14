@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -133,6 +134,7 @@ class AppState:
         self.interaction = LazyDouyinInteraction()
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
         self._last_upload_reconcile = 0.0
+        self._disk_stop_triggered = False
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -306,6 +308,25 @@ class AppState:
         configured = self.settings.load()["output_path"]
         return Path(configured) if configured else PROJECT_ROOT / "downloads"
 
+    def storage_status(self, enforce: bool = False) -> dict:
+        settings = self.settings.load()
+        target = self.output_path().expanduser()
+        probe = target
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        usage = shutil.disk_usage(probe)
+        free_gb = usage.free / 1024 ** 3
+        warning_gb = int(settings.get("disk_warning_gb") or 0)
+        stop_gb = int(settings.get("disk_stop_gb") or 0)
+        level = "critical" if stop_gb and free_gb <= stop_gb else "warning" if warning_gb and free_gb <= warning_gb else "healthy"
+        if enforce and level == "critical" and self.recorder.is_running and not self._disk_stop_triggered:
+            self._disk_stop_triggered = True
+            self.recorder._append_log(f"桌面控制台：磁盘仅剩 {free_gb:.1f} GB，已触发保护并安全停止录制")
+            threading.Thread(target=self.recorder.stop, daemon=True, name="disk-protection-stop").start()
+        elif level != "critical":
+            self._disk_stop_triggered = False
+        return {"path": str(target), "free_bytes": usage.free, "total_bytes": usage.total, "free_gb": round(free_gb, 1), "warning_gb": warning_gb, "stop_gb": stop_gb, "level": level}
+
 def open_in_file_manager(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
@@ -363,6 +384,7 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/state":
                     state.maybe_reconcile_uploads()
                     recordings = state.recordings()
+                    storage = state.storage_status(enforce=True)
                     self._json({
                         "anchors": state.anchors.list(),
                         "settings": state.settings.load(),
@@ -373,6 +395,7 @@ def make_handler(state: AppState, token: str):
                         "work_pull": state.work_pull.status(),
                         "recordings": recordings,
                         "recording_groups": group_recordings(recordings),
+                        "storage": storage,
                     })
                 elif path == "/api/logs":
                     query = parse_qs(urlparse(self.path).query)
@@ -594,6 +617,9 @@ def make_handler(state: AppState, token: str):
                     self._json({"baidupan": state.uploads.clear_finished()})
                 elif path == "/api/start":
                     state.sync_recording_rooms()
+                    storage = state.storage_status()
+                    if storage.get("level") == "critical":
+                        raise RuntimeError(f"磁盘空间仅剩 {storage.get('free_gb')} GB，低于停止录制阈值")
                     if not any(anchor.get("enabled_recording") and (anchor.get("live_url") or "live.douyin.com/" in str(anchor.get("profile_url") or "")) for anchor in state.anchors.list()):
                         raise ValueError("请至少启用一个直播间")
                     state.settings.save(body.get("settings", {}))

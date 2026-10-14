@@ -20,7 +20,7 @@ const pageMeta: Record<string, [string, string]> = {
   interact: ['直播监听', '弹幕、礼物与直播声音'], works: ['作品拉取', '增量下载公开作品并自动去重'],
   library: ['媒体与归档', '浏览本地文件并管理百度网盘上传'], settings: ['设置', '录制、账号、后台与界面偏好'],
 };
-const emptyState: AppState = { anchors: [], settings: {}, status: {}, baidupan: {}, update: {}, interaction: {}, work_pull: {}, recordings: [], recording_groups: [] };
+const emptyState: AppState = { anchors: [], settings: {}, status: {}, storage: {}, baidupan: {}, update: {}, interaction: {}, work_pull: {}, recordings: [], recording_groups: [] };
 
 export function App() {
   const { setColorScheme } = useMantineColorScheme();

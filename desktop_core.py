@@ -31,6 +31,8 @@ SETTING_KEYS = {
     "use_proxy": "是否使用代理ip(是/否)",
     "proxy_address": "代理地址",
     "check_interval": "循环时间(秒)",
+    "disk_warning_gb": "磁盘空间预警阈值(GB)",
+    "disk_stop_gb": "磁盘空间停止录制阈值(GB)",
 }
 
 DEFAULT_SETTINGS = {
@@ -44,6 +46,8 @@ DEFAULT_SETTINGS = {
     "use_proxy": False,
     "proxy_address": "",
     "check_interval": 300,
+    "disk_warning_gb": 30,
+    "disk_stop_gb": 10,
 }
 
 
@@ -52,7 +56,7 @@ def normalize_recorder_anchor_name(value: str) -> str:
     return re.sub(r"^序号\d+\s+", "", str(value or "").strip()).strip()
 
 BOOL_FIELDS = {"split_enabled", "convert_to_mp4", "delete_original", "use_proxy"}
-INT_FIELDS = {"split_seconds", "check_interval"}
+INT_FIELDS = {"split_seconds", "check_interval", "disk_warning_gb", "disk_stop_gb"}
 ALLOWED_FORMATS = {"TS", "MKV", "FLV", "MP4", "MP3", "M4A", "MP3音频", "M4A音频"}
 ALLOWED_QUALITIES = {"原画", "超清", "高清", "标清", "流畅"}
 
@@ -274,8 +278,10 @@ class SettingsStore:
                 values[field] = int(values[field])
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"{field} 必须是整数") from exc
-            if values[field] < 1:
-                raise ValueError(f"{field} 必须大于 0")
+            if values[field] < (0 if field.startswith("disk_") else 1):
+                raise ValueError(f"{field} 的数值不正确")
+        if values["disk_warning_gb"] and values["disk_stop_gb"] > values["disk_warning_gb"]:
+            raise ValueError("停止录制阈值不能高于空间预警阈值")
         for field in BOOL_FIELDS:
             values[field] = bool(values[field])
         values["output_path"] = str(values["output_path"]).strip()
