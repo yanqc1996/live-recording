@@ -361,6 +361,56 @@ class WorkPullManager:
         os.replace(temporary, target)
         return True, target
 
+    def find_replay_candidates(self, user_url: str, since: int, until: int | None = None) -> list[dict]:
+        """Read recent post metadata and return only explicit live-replay candidates."""
+        session = self._session(self._cookie)
+        sec_user_id = self._resolve_sec_user_id(session, user_url)
+        until = int(until or time.time()) + 7 * 86400
+        lower = max(0, int(since) - 6 * 3600)
+        candidates = []
+        cursor = 0
+        for page_index in range(3):
+            page = self._post_page(session, sec_user_id, cursor, page_index == 0)
+            if page.get("_json_error") or page.get("_request_error"):
+                raise RuntimeError(page.get("_request_error") or page.get("_json_error"))
+            awemes = page.get("aweme_list") or []
+            for aweme in awemes:
+                created_at = _aweme_time(aweme)
+                if created_at and not lower <= created_at <= until:
+                    continue
+                desc = str(aweme.get("desc") or "")
+                explicit = bool(
+                    aweme.get("is_live_replay") or aweme.get("live_replay_info")
+                    or (aweme.get("video") or {}).get("is_live_replay")
+                    or re.search(r"直播回放|直播录像|直播录屏", desc)
+                )
+                if not explicit:
+                    continue
+                media = next((item for item in media_items_from_aweme(aweme) if item.kind == "video"), None)
+                if not media:
+                    continue
+                candidates.append({
+                    "id": str(aweme.get("aweme_id") or aweme.get("group_id") or ""),
+                    "created_at": created_at,
+                    "desc": desc or "直播回放",
+                    "url": media.url,
+                    "filename": media.filename,
+                    "reason": "平台标记为直播回放" if not re.search(r"直播回放|直播录像|直播录屏", desc) else "作品标题包含直播回放标识",
+                })
+            if not page.get("has_more"):
+                break
+            cursor = int(page.get("max_cursor") or 0)
+        return candidates
+
+    def download_replay(self, candidate: dict, anchor_name: str) -> dict:
+        url = str(candidate.get("url") or "")
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("回放地址无效")
+        folder = self.default_output / "douyin_replays" / _sanitize_filename(anchor_name, 80)
+        item = MediaItem(url, _sanitize_filename(str(candidate.get("filename") or candidate.get("id") or "直播回放"), 150), "video")
+        downloaded, path = self._download(self._session(self._cookie), item, folder)
+        return {"downloaded": downloaded, "path": str(path), "name": path.name}
+
     def _run(self, user_url: str, output_path: str, force: bool, cookie: str) -> None:
         stats = {"fetched": 0, "new": 0, "skipped": 0, "downloaded": 0, "failed": 0}
         try:

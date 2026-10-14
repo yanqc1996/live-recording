@@ -135,6 +135,7 @@ class AppState:
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
         self._last_upload_reconcile = 0.0
         self._disk_stop_triggered = False
+        self._replay_candidates: dict[str, dict] = {}
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -721,6 +722,18 @@ def make_handler(state: AppState, token: str):
                             bool(body.get("force")),
                         )
                     }, HTTPStatus.CREATED)
+                elif path == "/api/replays/check":
+                    anchor = state.anchors.get(str(body.get("anchor_id") or ""))
+                    user_url = str(anchor.get("profile_url") or anchor.get("sec_user_id") or "")
+                    candidates = state.work_pull.find_replay_candidates(user_url, int(body.get("since") or 0))
+                    for candidate in candidates:
+                        state._replay_candidates[candidate["id"]] = {**candidate, "anchor_id": anchor["id"], "anchor_name": anchor["name"]}
+                    self._json({"candidates": [{key: value for key, value in candidate.items() if key != "url"} for candidate in candidates]})
+                elif path == "/api/replays/download":
+                    candidate = state._replay_candidates.get(str(body.get("candidate_id") or ""))
+                    if not candidate:
+                        raise ValueError("回放候选已失效，请重新检查")
+                    self._json({"replay": state.work_pull.download_replay(candidate, str(candidate.get("anchor_name") or "主播"))})
                 else:
                     self._json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:
