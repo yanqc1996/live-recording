@@ -330,6 +330,8 @@ class AppState:
             try:
                 live_room = self.interaction.resolve_live_room(value)
                 updates.update({
+                    "platform_user_id": live_room.get("anchor_id", ""),
+                    "sec_user_id": live_room.get("sec_anchor_id", "") or anchor.get("sec_user_id", ""),
                     "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
                     "web_rid": live_room.get("web_rid", ""),
                     "room_id": live_room.get("room_id", ""),
@@ -546,7 +548,7 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/media/preview":
                     self._serve_media_preview()
                 elif path == "/api/anchors":
-                    self._json({"anchors": state.anchors.list()})
+                    self._json({"anchors": state.anchors.list(), "duplicate_groups": state.anchors.duplicate_groups()})
                 else:
                     self._json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -563,24 +565,41 @@ def make_handler(state: AppState, token: str):
                     state.rooms.add(body.get("value", ""))
                     self._json({"rooms": state.rooms.list()}, HTTPStatus.CREATED)
                 elif path == "/api/anchors":
-                    anchor = state.anchors.add(
-                        str(body.get("name", "")),
-                        str(body.get("profile_url", "")),
-                        str(body.get("live_url", "")),
-                    )
                     resolved_fields = {
+                        "platform_user_id": body.get("platform_user_id", ""),
                         "sec_user_id": body.get("sec_user_id", ""),
                         "web_rid": body.get("web_rid", ""),
                         "room_id": body.get("room_id", ""),
                         "last_live_status": body.get("last_live_status", "unknown"),
                         "last_resolved_at": body.get("last_resolved_at"),
                     }
-                    if any(value not in (None, "", "unknown") for value in resolved_fields.values()):
-                        anchor = state.anchors.update(anchor["id"], resolved_fields)
+                    candidate = {**body, **resolved_fields}
+                    anchor = state.anchors.find_by_identity(candidate)
+                    reused = bool(anchor)
+                    if anchor:
+                        updates = {key: value for key, value in {
+                            "name": body.get("name"), "profile_url": body.get("profile_url"),
+                            "live_url": body.get("live_url"), **resolved_fields,
+                        }.items() if value not in (None, "", "unknown")}
+                        anchor = state.anchors.update(str(anchor["id"]), updates)
+                    else:
+                        anchor = state.anchors.add(
+                            str(body.get("name", "")), str(body.get("profile_url", "")), str(body.get("live_url", "")),
+                        )
+                        if any(value not in (None, "", "unknown") for value in resolved_fields.values()):
+                            anchor = state.anchors.update(anchor["id"], resolved_fields)
                     state.sync_recording_rooms()
-                    self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()}, HTTPStatus.CREATED)
+                    self._json({"anchor": anchor, "reused": reused, "anchors": state.anchors.list(), "rooms": state.rooms.list()}, HTTPStatus.OK if reused else HTTPStatus.CREATED)
                 elif path == "/api/anchors/search":
                     self._json(state.interaction.search_users(str(body.get("keyword", "")), int(body.get("limit", 12))))
+                elif path == "/api/anchors/merge":
+                    if state.recorder.is_running:
+                        raise RuntimeError("录制期间不可合并主播身份，请先停止录制服务")
+                    duplicate_ids = list(body.get("duplicate_ids") or [])
+                    anchor = state.anchors.merge(str(body.get("primary_id", "")), duplicate_ids)
+                    state.gifts.remap_anchor(duplicate_ids, str(anchor["id"]), str(anchor.get("name") or ""))
+                    state.sync_recording_rooms()
+                    self._json({"anchor": anchor, "anchors": state.anchors.list(), "duplicate_groups": state.anchors.duplicate_groups()})
                 elif path == "/api/anchors/bulk":
                     items = body.get("anchors") or []
                     if not isinstance(items, list) or len(items) > 2000:
@@ -596,6 +615,7 @@ def make_handler(state: AppState, token: str):
                     for item in items:
                         state.anchors.update(str(item.get("id")), {
                             "name": item.get("name", ""), "profile_url": item.get("profile_url", ""),
+                            "platform_user_id": item.get("platform_user_id", ""),
                             "sec_user_id": item.get("sec_user_id", ""), "live_url": item.get("live_url", ""),
                             "web_rid": item.get("web_rid", ""), "room_id": item.get("room_id", ""),
                             "default_quality": item.get("default_quality", "原画"), "output_dir": item.get("output_dir", ""),
@@ -604,7 +624,7 @@ def make_handler(state: AppState, token: str):
                     state.sync_recording_rooms()
                     self._json({"anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
-                    editable = ("name", "profile_url", "sec_user_id", "live_url", "web_rid", "room_id", "default_quality", "output_dir", "enabled_recording")
+                    editable = ("name", "profile_url", "platform_user_id", "sec_user_id", "live_url", "web_rid", "room_id", "default_quality", "output_dir", "enabled_recording")
                     anchor = state.anchors.update(parts[2], {key: body[key] for key in editable if key in body})
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
@@ -615,6 +635,7 @@ def make_handler(state: AppState, token: str):
                         raise IndexError("主播不存在")
                     live_room = state.interaction.resolve_live_room(str(anchor.get("profile_url") or anchor.get("live_url") or ""))
                     updates = {
+                        "platform_user_id": live_room.get("anchor_id", ""),
                         "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
                         "web_rid": live_room.get("web_rid", ""),
                         "room_id": live_room.get("room_id", ""),
@@ -642,6 +663,8 @@ def make_handler(state: AppState, token: str):
                             live_room = state.interaction.resolve_live_room(profile_url)
                             live_url = str(live_room.get("room_url") or "").strip()
                             updates = {
+                                "platform_user_id": live_room.get("anchor_id", ""),
+                                "sec_user_id": live_room.get("sec_anchor_id", "") or anchor.get("sec_user_id", ""),
                                 "live_url": live_url,
                                 "web_rid": live_room.get("web_rid", ""),
                                 "room_id": live_room.get("room_id", ""),

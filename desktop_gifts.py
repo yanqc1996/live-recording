@@ -133,6 +133,23 @@ class GiftLedger:
             self._save(data)
             return self.stats()
 
+    def remap_anchor(self, old_ids: list[str], new_id: str, new_name: str) -> int:
+        """Move historical gift events to a surviving canonical anchor identity."""
+        old_ids = {str(value) for value in old_ids if str(value)}
+        if not old_ids:
+            return 0
+        with self._lock:
+            data = self._load()
+            changed = 0
+            for event in data["events"]:
+                if str(event.get("anchor_id") or "") in old_ids:
+                    event["anchor_id"] = new_id
+                    event["anchor_name"] = new_name
+                    changed += 1
+            if changed:
+                self._save(data)
+            return changed
+
     def stats(self, anchor_id: str = "", session_id: str = "", anchor_name: str = "", started_at: float = 0, ended_at: float = 0) -> dict:
         with self._lock:
             data = self._load()

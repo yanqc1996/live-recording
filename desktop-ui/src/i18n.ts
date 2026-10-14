@@ -24,6 +24,8 @@ const ENGLISH: Record<string, string> = {
   '没有符合条件的主播': 'No matching creators', '主播数据编辑器': 'Creator Data Editor', '从左侧选择主播后修改完整资料': 'Select a creator to edit their profile',
   '粘贴手机分享': 'Paste Mobile Share', '主页分享文案或链接': 'Profile share text or URL', '解析主播': 'Resolve Creator', '清空': 'Clear', '确认加入主播库': 'Add to Creator Library',
   '暂不解析，直接保存': 'Save Without Resolving', '主播名称': 'Creator Name', '直播间地址': 'Live Room URL',
+  '基础资料': 'Profile', '参与自动录制': 'Include in Auto Recording', '高级标识、历史别名与存储': 'Identity, Aliases & Storage',
+  '历史昵称：': 'Previous names: ', '合并重复身份': 'Merge Duplicate Identity', '主播数据已保存': 'Creator saved', '重复主播身份已合并': 'Duplicate identities merged',
   '直播间控制': 'Live Room Controls', '选择主播': 'Select Creator', '开始监听': 'Start Monitoring', '停止': 'Stop', '工作模式': 'Work Mode',
   '只听直播声音': 'Live Audio Only', '播放声音': 'Play Audio', '停止声音': 'Stop Audio', '本场礼物与音浪': 'Session Gifts & Points',
   '礼物数量': 'Gifts', '预估音浪': 'Estimated Points', '送礼用户': 'Contributors', '平台值': 'Platform', '本地估算': 'Estimated', '未知': 'Unknown', '价值覆盖率': 'Value Coverage',

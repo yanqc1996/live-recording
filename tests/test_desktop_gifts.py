@@ -67,3 +67,13 @@ class GiftLedgerTest(unittest.TestCase):
             self.assertEqual(stats["gift_count"], 1)
             self.assertEqual(stats["platform_count"], 1)
             self.assertEqual(stats["coverage_percent"], 100)
+
+    def test_remap_anchor_keeps_gift_history_after_identity_merge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = GiftLedger(Path(directory) / "gift_ledger.json")
+            ledger.begin({"id": "duplicate", "name": "旧名字"}, "room")
+            ledger.record({"type": "gift", "gift_id": "g1", "gift_name": "玫瑰", "combo_count": 2, "diamond_count": 1})
+
+            self.assertEqual(1, ledger.remap_anchor(["duplicate"], "primary", "新名字"))
+            self.assertEqual(2, ledger.stats(anchor_id="primary")["gift_count"])
+            self.assertEqual(0, ledger.stats(anchor_id="duplicate")["gift_count"])

@@ -50,6 +50,29 @@ class AnchorStoreTest(unittest.TestCase):
             self.assertEqual("98765", updated["room_id"])
             self.assertEqual("/tmp/主播", updated["output_dir"])
             self.assertFalse(updated["enabled_recording"])
+            self.assertEqual(["旧名称", "新名称"], updated["aliases"]["names"])
+            self.assertEqual(
+                ["https://www.douyin.com/user/old", "https://www.douyin.com/user/new"],
+                updated["aliases"]["profile_urls"],
+            )
+
+    def test_identity_lookup_and_merge_preserve_primary_uuid_and_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AnchorStore(Path(directory) / "anchors.json")
+            primary = store.add("新名字", "https://www.douyin.com/user/new")
+            primary = store.update(primary["id"], {"platform_user_id": "12345", "sec_user_id": "SEC-ONE", "live_url": "https://live.douyin.com/new"})
+            duplicate = store.add("旧名字", "https://www.douyin.com/user/old")
+            duplicate = store.update(duplicate["id"], {"sec_user_id": "SEC-ONE", "room_id": "ROOM-OLD"})
+
+            self.assertEqual(primary["id"], store.find_by_identity({"sec_user_id": "SEC-ONE"})["id"])
+            self.assertEqual(primary["id"], store.find_by_identity({"platform_user_id": "12345"})["id"])
+            self.assertEqual(1, len(store.duplicate_groups()))
+            merged = store.merge(primary["id"], [duplicate["id"]])
+
+            self.assertEqual(primary["id"], merged["id"])
+            self.assertEqual(1, len(store.list()))
+            self.assertEqual("ROOM-OLD", merged["room_id"])
+            self.assertEqual(["新名字", "旧名字"], merged["aliases"]["names"])
 
     def test_edit_rejects_duplicate_profile_url(self):
         with tempfile.TemporaryDirectory() as directory:
