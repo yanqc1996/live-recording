@@ -13,6 +13,7 @@ export type DesktopBridge = {
   chooseOutputDirectory(): Promise<string>;
   openExternal(url: string): Promise<void>;
   setCompactMode(enabled: boolean): Promise<any>;
+  onCompactModeRequested(callback: (enabled: boolean) => void): () => void;
   onDouyinStatusChanged(callback: (status: any) => void): () => void;
 };
 

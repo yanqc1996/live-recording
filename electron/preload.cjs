@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('liveRecorderDesktop', {
   chooseOutputDirectory: () => ipcRenderer.invoke('dialog:output-directory'),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   setCompactMode: (enabled) => ipcRenderer.invoke('window:compact-mode', Boolean(enabled)),
+  onCompactModeRequested: (callback) => {
+    const handler = (_event, enabled) => callback(Boolean(enabled));
+    ipcRenderer.on('window:compact-mode-requested', handler);
+    return () => ipcRenderer.removeListener('window:compact-mode-requested', handler);
+  },
   onDouyinStatusChanged: (callback) => {
     const handler = (_event, status) => callback(status);
     ipcRenderer.on('douyin:status-changed', handler);

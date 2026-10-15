@@ -46,6 +46,14 @@ export function App() {
     window.liveRecorderDesktop?.getDouyinStatus().then(setDouyinAuth);
     return window.liveRecorderDesktop?.onDouyinStatusChanged(setDouyinAuth);
   }, []);
+  useEffect(() => window.liveRecorderDesktop?.onCompactModeRequested(async enabled => {
+    try {
+      await window.liveRecorderDesktop?.setCompactMode(enabled);
+      setCompact(enabled);
+      localStorage.setItem('liveRecorderCompactMode', enabled ? '1' : '0');
+      if (enabled) { setPage('interact'); localStorage.setItem('liveRecorderLastView', 'interact'); }
+    } catch (e) { notify((e as Error).message, true); }
+  }), [notify]);
   useEffect(() => {
     if (activeAnchorId && state.anchors.some(anchor => anchor.id === activeAnchorId)) return;
     const next = state.anchors.find(anchor => !!anchorLiveUrl(anchor))?.id || state.anchors[0]?.id || '';

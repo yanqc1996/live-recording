@@ -371,7 +371,7 @@ function hideMainWindow() {
 
 async function openCompactWindow() {
   showMainWindow();
-  await mainWindow.webContents.executeJavaScript('setCompactMode(true)');
+  mainWindow.webContents.send('window:compact-mode-requested', true);
 }
 
 function trayIcon() {
