@@ -38,6 +38,22 @@ class FakeResponse:
 
 
 class DouyinProfileResolverTest(unittest.TestCase):
+    def test_new_gift_message_variants_are_not_silently_ignored(self):
+        events = []
+        session = DouyinLiveSession("https://live.douyin.com/1", DouyinAuthState.from_cookie(""), events.append)
+        gift = Live_pb2.GiftMessage()
+        gift.giftId = "88"
+        gift.comboCount = 2
+        gift.gift.id = 88
+        gift.gift.name = "小心心"
+        item = Live_pb2.Message(method="WebcastGiftMessageV2", payload=gift.SerializeToString())
+
+        session._handle_message(item)
+
+        self.assertEqual("gift", events[0]["type"])
+        self.assertEqual("WebcastGiftMessageV2", events[0]["source_method"])
+        self.assertEqual(2, events[0]["combo_count"])
+
     def test_extracts_short_url_from_mobile_share_text(self):
         text = "复制此链接，打开抖音搜索 https://v.douyin.com/AbCd12/ 8@1.com"
         self.assertEqual("https://v.douyin.com/AbCd12/", extract_douyin_share_url(text))
@@ -151,7 +167,7 @@ class DouyinAnonymousAccessTest(unittest.TestCase):
 
         self.assertFalse(status["connected"])
         self.assertEqual("anonymous", status["access_mode"])
-        thread.return_value.start.assert_called_once()
+        self.assertEqual(2, thread.return_value.start.call_count)
 
     @patch("desktop_douyin.threading.Thread")
     def test_logged_in_account_can_keep_live_listener_anonymous(self, thread):

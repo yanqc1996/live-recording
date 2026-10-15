@@ -921,6 +921,7 @@ class DouyinLiveSession:
         self.info: LiveRoomInfo | None = None
         self.ws: WebSocketApp | None = None
         self._closed = threading.Event()
+        self.method_counts: dict[str, int] = {}
 
     def start(self) -> None:
         self.info = fetch_live_room_info(self.auth, self.room_url)
@@ -1025,15 +1026,17 @@ class DouyinLiveSession:
             self.on_event({"type": "error", "message": f"弹幕解析失败：{exc}"})
 
     def _handle_message(self, item) -> None:
-        if item.method == "WebcastChatMessage":
+        method = str(item.method or "")
+        self.method_counts[method] = self.method_counts.get(method, 0) + 1
+        if method == "WebcastChatMessage":
             msg = Live_pb2.ChatMessage()
             msg.ParseFromString(item.payload)
             self.on_event({"type": "chat", "user": _user_to_dict(msg.user), "content": msg.content})
-        elif item.method == "WebcastMemberMessage":
+        elif method == "WebcastMemberMessage":
             msg = Live_pb2.MemberMessage()
             msg.ParseFromString(item.payload)
             self.on_event({"type": "member", "user": _user_to_dict(msg.user), "content": "进入直播间"})
-        elif item.method == "WebcastGiftMessage":
+        elif "GiftMessage" in method:
             msg = Live_pb2.GiftMessage()
             msg.ParseFromString(item.payload)
             wire = _gift_wire_metadata(item.payload)
@@ -1050,8 +1053,9 @@ class DouyinLiveSession:
                 "repeat_end": bool(wire.get("repeat_end")),
                 "diamond_count": int(wire.get("diamond_count") or 0),
                 "content": f"送出 {gift_name} x {combo_count}",
+                "source_method": method,
             })
-        elif item.method == "WebcastSocialMessage":
+        elif method == "WebcastSocialMessage":
             msg = Live_pb2.SocialMessage()
             msg.ParseFromString(item.payload)
             if msg.action == 1:
@@ -1080,6 +1084,11 @@ class DouyinInteractionManager:
         self._audio_source_url = ""
         self._audio_stream_id = ""
         self._event_callback = on_event
+        self._event_callback_errors = 0
+        self._last_event_callback_error = ""
+        self._rank_stop = threading.Event()
+        self._rank_thread: threading.Thread | None = None
+        self._rank_error = ""
 
     def set_auth(self, cookie: str, security: dict | None = None, anonymous_live_access: bool = True) -> None:
         self.stop_audio()
@@ -1101,6 +1110,7 @@ class DouyinInteractionManager:
 
     def status(self) -> dict:
         with self._lock:
+            methods = dict(self._session.method_counts) if self._session else {}
             return {
                 "connected": self.connected,
                 "access_mode": self._live_auth().access_mode,
@@ -1111,6 +1121,12 @@ class DouyinInteractionManager:
                 "room_url": self._room_url,
                 "can_send": self.connected and self._auth.security.complete,
                 "audio_playing": bool(self._audio_process and self._audio_process.poll() is None),
+                "gift_messages_seen": sum(count for method, count in methods.items() if "GiftMessage" in method),
+                "message_types": methods,
+                "event_callback_errors": self._event_callback_errors,
+                "last_event_callback_error": self._last_event_callback_error,
+                "gift_rank_fallback": bool(self._rank_thread and self._rank_thread.is_alive()),
+                "gift_rank_error": self._rank_error,
             }
 
     def _append(self, event: dict) -> None:
@@ -1122,8 +1138,9 @@ class DouyinInteractionManager:
         if self._event_callback:
             try:
                 self._event_callback(dict(event))
-            except Exception:
-                pass
+            except Exception as exc:
+                self._event_callback_errors += 1
+                self._last_event_callback_error = str(exc)
 
     def events(self, cursor: int = 0) -> dict:
         with self._lock:
@@ -1145,7 +1162,21 @@ class DouyinInteractionManager:
             self._thread.start()
         mode = "登录增强模式" if live_auth.connected else "匿名模式"
         self._append({"type": "system", "message": f"正在以{mode}连接直播间弹幕…"})
+        self._rank_stop.clear()
+        self._rank_thread = threading.Thread(target=self._poll_gift_rank, daemon=True, name="douyin-gift-rank")
+        self._rank_thread.start()
         return self.status()
+
+    def _poll_gift_rank(self) -> None:
+        while not self._rank_stop.is_set():
+            try:
+                result = fetch_gift_rank(self._live_auth(), self._room_url)
+                self._rank_error = str(result.get("raw_message") or "")
+                if result.get("ranks"):
+                    self._append({"type": "gift_rank_snapshot", "ranks": result["ranks"], "updated_at": result.get("updated_at")})
+            except Exception as exc:
+                self._rank_error = str(exc)
+            self._rank_stop.wait(30)
 
     def _run_session(self) -> None:
         try:
@@ -1158,6 +1189,11 @@ class DouyinInteractionManager:
             self._append({"type": "error", "message": message})
 
     def stop_listening(self) -> dict:
+        self._rank_stop.set()
+        rank_thread = self._rank_thread
+        if rank_thread and rank_thread.is_alive() and threading.current_thread() is not rank_thread:
+            rank_thread.join(timeout=2)
+        self._rank_thread = None
         with self._lock:
             session = self._session
             self._session = None

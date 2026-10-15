@@ -77,3 +77,29 @@ class GiftLedgerTest(unittest.TestCase):
             self.assertEqual(1, ledger.remap_anchor(["duplicate"], "primary", "新名字"))
             self.assertEqual(2, ledger.stats(anchor_id="primary")["gift_count"])
             self.assertEqual(0, ledger.stats(anchor_id="duplicate")["gift_count"])
+
+    def test_rank_snapshot_supplies_sound_wave_when_websocket_has_no_gifts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = GiftLedger(Path(directory) / "gift_ledger.json")
+            context = ledger.begin({"id": "anchor-1", "name": "主播"}, "room")
+            first = {"type": "gift_rank_snapshot", "ranks": [{"user": {"id": "u1", "nickname": "观众"}, "contribution": 30}]}
+            second = {"type": "gift_rank_snapshot", "ranks": [{"user": {"id": "u1", "nickname": "观众"}, "contribution": 45}]}
+
+            ledger.record(first, context)
+            ledger.record(second, context)
+            stats = ledger.stats(anchor_id="anchor-1")
+
+            self.assertEqual(45, stats["sound_wave"])
+            self.assertEqual(45, stats["rank_sound_wave"])
+            self.assertEqual(0, stats["gift_count"])
+            self.assertEqual(1, stats["donor_count"])
+
+    def test_rank_fallback_stops_after_real_gift_arrives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = GiftLedger(Path(directory) / "gift_ledger.json")
+            context = ledger.begin({"id": "anchor-1", "name": "主播"}, "room")
+            ledger.record({"type": "gift_rank_snapshot", "ranks": [{"user": {"id": "u1"}, "contribution": 10}]}, context)
+            ledger.record({"type": "gift", "gift_id": "g1", "gift_name": "玫瑰", "diamond_count": 1, "combo_count": 1}, context)
+            ledger.record({"type": "gift_rank_snapshot", "ranks": [{"user": {"id": "u1"}, "contribution": 30}]}, context)
+
+            self.assertEqual(11, ledger.stats(anchor_id="anchor-1")["sound_wave"])

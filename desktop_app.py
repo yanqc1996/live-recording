@@ -236,6 +236,11 @@ class AppState:
                 if anchor_id in self._gift_monitors:
                     return
                 context = self.gifts.begin(anchor, room_url)
+                interaction = self.interaction.status()
+                if interaction.get("listening") and str(interaction.get("room_url") or "").rstrip("/") == room_url.rstrip("/"):
+                    self._gift_monitors[anchor_id] = "shared"
+                    self.recorder._append_log(f"桌面控制台：{record_name} 礼物统计复用当前直播监听连接")
+                    return
                 from desktop_douyin import DouyinInteractionManager
                 manager = DouyinInteractionManager(on_event=lambda event, ctx=context: self.gifts.record(event, ctx))
                 self._gift_monitors[anchor_id] = manager
@@ -252,7 +257,7 @@ class AppState:
         anchor_id = self.anchors.find_id_by_name(record_name)
         with self._gift_monitor_lock:
             manager = self._gift_monitors.pop(anchor_id or "", None)
-        if manager:
+        if manager and manager != "shared":
             try:
                 manager.stop_listening()
                 self.recorder._append_log(f"桌面控制台：已结束 {record_name} 的本场礼物统计")

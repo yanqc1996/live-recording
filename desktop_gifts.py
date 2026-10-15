@@ -17,6 +17,8 @@ class GiftLedger:
         self._context: dict = {}
         self._seen: set[str] = set()
         self._combos: dict[str, tuple[int, float]] = {}
+        self._rank_snapshots: dict[str, dict[str, int]] = {}
+        self._websocket_gift_sessions: set[str] = set()
 
     def _load(self) -> dict:
         try:
@@ -58,12 +60,15 @@ class GiftLedger:
             self._combos.clear()
 
     def record(self, event: dict, context: dict | None = None) -> dict | None:
+        if event.get("type") == "gift_rank_snapshot":
+            return self._record_rank_snapshot(event, context)
         if event.get("type") != "gift":
             return None
         with self._lock:
             active_context = context or self._context
             if not active_context:
                 return None
+            self._websocket_gift_sessions.add(str(active_context.get("session_id") or ""))
             message_id = str(event.get("message_id") or "")
             if message_id and message_id in self._seen:
                 return None
@@ -115,6 +120,41 @@ class GiftLedger:
             self._save(data)
             return item
 
+    def _record_rank_snapshot(self, event: dict, context: dict | None = None) -> dict | None:
+        """Persist contribution-rank deltas when anonymous WebSocket omits gift messages."""
+        with self._lock:
+            active_context = context or self._context
+            session_id = str(active_context.get("session_id") or "") if active_context else ""
+            if not active_context or not session_id or session_id in self._websocket_gift_sessions:
+                return None
+            ranks = event.get("ranks") if isinstance(event.get("ranks"), list) else []
+            previous = self._rank_snapshots.get(session_id, {})
+            current: dict[str, int] = {}
+            data = self._load()
+            added = 0
+            now = float(event.get("time") or time.time())
+            for rank in ranks:
+                user = rank.get("user") if isinstance(rank.get("user"), dict) else {}
+                user_id = str(user.get("id") or user.get("sec_uid") or user.get("nickname") or "anonymous")
+                contribution = max(0, int(rank.get("contribution") or 0))
+                current[user_id] = contribution
+                delta = max(0, contribution - int(previous.get(user_id) or 0))
+                if not delta:
+                    continue
+                data["events"].append({
+                    **active_context, "time": now, "message_id": f"rank:{session_id}:{user_id}:{contribution}",
+                    "gift_id": "rank-contribution", "gift_name": "贡献榜音浪", "quantity": 0,
+                    "combo_count": 0, "unit_value": delta, "sound_wave": delta, "value_known": True,
+                    "value_source": "rank", "rank_snapshot": True,
+                    "user": {"id": str(user.get("id") or ""), "nickname": str(user.get("nickname") or "匿名用户"), "display_id": str(user.get("display_id") or "")},
+                })
+                added += delta
+            self._rank_snapshots[session_id] = current
+            if added:
+                data["events"] = data["events"][-20000:]
+                self._save(data)
+            return {"source": "rank", "sound_wave": added} if added else None
+
     def set_price(self, gift_id: str, gift_name: str, value: int) -> dict:
         if value < 0:
             raise ValueError("礼物音浪不能小于 0")
@@ -165,11 +205,12 @@ class GiftLedger:
             gifts: dict[str, dict] = {}
             users: dict[str, dict] = {}
             for item in events:
-                gift_key = str(item.get("gift_id") or item.get("gift_name"))
-                gift = gifts.setdefault(gift_key, {"gift_id": item.get("gift_id"), "name": item.get("gift_name"), "quantity": 0, "sound_wave": 0, "value_known": True, "unit_value": item.get("unit_value") or 0})
-                gift["quantity"] += int(item.get("quantity") or 0)
-                gift["sound_wave"] += int(item.get("sound_wave") or 0)
-                gift["value_known"] = gift["value_known"] and bool(item.get("value_known"))
+                if not item.get("rank_snapshot"):
+                    gift_key = str(item.get("gift_id") or item.get("gift_name"))
+                    gift = gifts.setdefault(gift_key, {"gift_id": item.get("gift_id"), "name": item.get("gift_name"), "quantity": 0, "sound_wave": 0, "value_known": True, "unit_value": item.get("unit_value") or 0})
+                    gift["quantity"] += int(item.get("quantity") or 0)
+                    gift["sound_wave"] += int(item.get("sound_wave") or 0)
+                    gift["value_known"] = gift["value_known"] and bool(item.get("value_known"))
                 user_data = item.get("user") or {}
                 user_key = str(user_data.get("id") or user_data.get("nickname") or "anonymous")
                 user = users.setdefault(user_key, {"id": user_data.get("id"), "nickname": user_data.get("nickname") or "匿名用户", "quantity": 0, "sound_wave": 0})
@@ -181,6 +222,7 @@ class GiftLedger:
                 "gift_count": sum(int(item.get("quantity") or 0) for item in events),
                 "event_count": len(events),
                 "sound_wave": sum(int(item.get("sound_wave") or 0) for item in events),
+                "rank_sound_wave": sum(int(item.get("sound_wave") or 0) for item in events if item.get("rank_snapshot")),
                 "platform_count": sum(int(item.get("quantity") or 0) for item in events if item.get("value_source") == "platform"),
                 "estimated_count": sum(int(item.get("quantity") or 0) for item in events if item.get("value_source") == "estimated"),
                 "unknown_count": sum(int(item.get("quantity") or 0) for item in events if not item.get("value_known")),
