@@ -308,6 +308,23 @@ class RecorderProcess:
         self._restart_timer: threading.Timer | None = None
         self._missed_incidents: deque[dict] = deque(maxlen=100)
         self.missed_recording_threshold = 120
+        self.recording_stale_threshold = 90
+        self.finalizing_display_seconds = 15
+
+    def _transition_room(self, key: str, name: str, state: str, **details) -> dict:
+        previous = self._room_states.get(key, {})
+        now = time.time()
+        changed = previous.get("state") != state
+        history = list(previous.get("history") or [])
+        if changed:
+            history.append({"state": state, "at": now})
+            history = history[-20:]
+        value = {
+            **previous, **details, "anchor_id": key if key != name else "", "name": name,
+            "state": state, "stage": state, "updated_at": now, "history": history,
+        }
+        self._room_states[key] = value
+        return value
 
     def set_douyin_cookie(self, cookie: str) -> None:
         """Keep the browser session in memory and pass it only to the recorder child."""
@@ -334,17 +351,8 @@ class RecorderProcess:
             name = normalize_recorder_anchor_name(started.group("name"))
             key = (self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name
             self._room_state_keys[name] = key
-            previous = self._room_states.get(key, {})
-            self._room_states[key] = {
-                **previous,
-                "anchor_id": key if key != name else "",
-                "name": name,
-                "state": "recording",
-                "started_at": time.time(),
-                "path": started.group("path").strip(),
-                "updated_at": time.time(),
-                "suspected_missed": False,
-            }
+            self._transition_room(key, name, "recording", started_at=time.time(), path=started.group("path").strip(),
+                                  last_file_size=0, last_file_growth_at=time.time(), suspected_missed=False)
             return
         completed = re.search(
             r"(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成",
@@ -353,15 +361,20 @@ class RecorderProcess:
         if completed:
             name = normalize_recorder_anchor_name(completed.group("name"))
             key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
-            previous = self._room_states.get(key, {})
-            self._room_states[key] = {
-                **previous,
-                "anchor_id": key if key != name else "",
-                "name": name,
-                "state": "waiting",
-                "completed_at": time.time(),
-                "updated_at": time.time(),
-            }
+            self._transition_room(key, name, "finalizing", completed_at=time.time())
+            return
+        waiting = re.search(r"(?P<name>.+?)\s+等待直播", line.strip())
+        if waiting:
+            name = normalize_recorder_anchor_name(waiting.group("name"))
+            key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
+            self._room_state_keys[name] = key
+            self._transition_room(key, name, "waiting", offline_detected_at=time.time(), path="")
+            return
+        failed = re.search(r"(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制出错", line.strip())
+        if failed:
+            name = normalize_recorder_anchor_name(failed.group("name"))
+            key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
+            self._transition_room(key, name, "reconnecting", error="直播流中断，等待自动重连", reconnecting_at=time.time())
             return
         live = re.search(r"(?P<name>.+?)\s+正在直播中", line.strip())
         if live:
@@ -370,14 +383,38 @@ class RecorderProcess:
             self._room_state_keys[name] = key
             previous = self._room_states.get(key, {})
             if previous.get("state") != "recording":
-                self._room_states[key] = {
-                    **previous,
-                    "anchor_id": key if key != name else "",
-                    "name": name,
-                    "state": "live",
-                    "live_detected_at": previous.get("live_detected_at") or time.time(),
-                    "updated_at": time.time(),
-                }
+                self._transition_room(key, name, "live", live_detected_at=previous.get("live_detected_at") or time.time())
+
+    @staticmethod
+    def _recording_size(path_value: str) -> int | None:
+        path = Path(path_value)
+        try:
+            if "%" not in path.name:
+                return path.stat().st_size if path.exists() else None
+            pattern = re.sub(r"%0?\d*d", "*", path.name)
+            files = list(path.parent.glob(pattern))
+            return sum(item.stat().st_size for item in files if item.is_file()) if files else None
+        except OSError:
+            return None
+
+    def _refresh_room_health(self) -> None:
+        now = time.time()
+        for key, state in self._room_states.items():
+            if state.get("state") == "finalizing" and now - float(state.get("completed_at") or now) >= self.finalizing_display_seconds:
+                self._transition_room(key, str(state.get("name") or key), "waiting", path="")
+                continue
+            if state.get("state") not in {"recording", "reconnecting"} or not state.get("path"):
+                continue
+            size = self._recording_size(str(state["path"]))
+            if size is None:
+                continue
+            previous_size = int(state.get("last_file_size") or 0)
+            if size > previous_size:
+                state.update({"last_file_size": size, "last_file_growth_at": now, "updated_at": now})
+                if state.get("state") == "reconnecting":
+                    self._transition_room(key, str(state.get("name") or key), "recording", error="")
+            elif now - float(state.get("last_file_growth_at") or state.get("started_at") or now) >= self.recording_stale_threshold:
+                self._transition_room(key, str(state.get("name") or key), "reconnecting", error="录像文件停止增长，正在等待拉流恢复", reconnecting_at=now)
 
     def _refresh_missed_recordings(self) -> None:
         now = time.time()
@@ -513,6 +550,7 @@ class RecorderProcess:
         return self.process is not None and self.process.poll() is None
 
     def status(self) -> dict:
+        self._refresh_room_health()
         self._refresh_missed_recordings()
         return {
             "running": self.is_running,

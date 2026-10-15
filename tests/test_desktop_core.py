@@ -217,7 +217,7 @@ class RecorderProcessTest(unittest.TestCase):
         self.assertEqual("anchor-123", states["anchor-123"]["anchor_id"])
 
         recorder._append_log("序号3 主播甲 2026-10-09 14:00:00 直播录制完成")
-        self.assertEqual("waiting", recorder.status()["room_states"]["anchor-123"]["state"])
+        self.assertEqual("finalizing", recorder.status()["room_states"]["anchor-123"]["state"])
 
     def test_sequence_prefix_does_not_leave_stale_recording_state(self):
         recorder = RecorderProcess(Path.cwd())
@@ -226,7 +226,7 @@ class RecorderProcessTest(unittest.TestCase):
 
         states = recorder.status()["room_states"]
         self.assertEqual(["吐司"], list(states))
-        self.assertEqual("waiting", states["吐司"]["state"])
+        self.assertEqual("finalizing", states["吐司"]["state"])
 
     def test_live_without_recording_is_marked_as_suspected_miss(self):
         recorder = RecorderProcess(Path.cwd())
@@ -282,8 +282,31 @@ class RecorderProcessTest(unittest.TestCase):
 
         recorder._append_log("主播甲 2026-10-09 14:00:00 直播录制完成")
         completed = recorder.status()["room_states"]["主播甲"]
-        self.assertEqual("waiting", completed["state"])
+        self.assertEqual("finalizing", completed["state"])
         self.assertIn("completed_at", completed)
+
+    def test_waiting_log_moves_finished_room_back_to_waiting(self):
+        recorder = RecorderProcess(Path.cwd())
+        recorder._append_log("主播甲 准备开始录制视频: /tmp/主播甲.ts")
+        recorder._append_log("主播甲 2026-10-09 14:00:00 直播录制完成")
+        recorder._append_log("序号1 主播甲 等待直播... ")
+
+        state = recorder.status()["room_states"]["主播甲"]
+        self.assertEqual("waiting", state["state"])
+        self.assertEqual("", state["path"])
+
+    def test_stalled_recording_enters_reconnecting_and_growth_recovers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "主播甲.ts"
+            path.write_bytes(b"first")
+            recorder = RecorderProcess(Path.cwd())
+            recorder.recording_stale_threshold = 0
+            recorder._append_log(f"主播甲 准备开始录制视频: {path}")
+
+            self.assertEqual("recording", recorder.status()["room_states"]["主播甲"]["state"])
+            self.assertEqual("reconnecting", recorder.status()["room_states"]["主播甲"]["state"])
+            path.write_bytes(b"first-more-data")
+            self.assertEqual("recording", recorder.status()["room_states"]["主播甲"]["state"])
 
 
 if __name__ == "__main__":

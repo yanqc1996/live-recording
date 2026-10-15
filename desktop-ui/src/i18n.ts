@@ -14,7 +14,7 @@ const ENGLISH: Record<string, string> = {
   '系统会持续巡检已启用主播，检测到开播后自动录制。': 'Enabled creators are checked continuously and recorded automatically when live.',
   '启动后会在后台自动巡检，不需要保持窗口打开。': 'Runs in the background; the window may stay closed.',
   '监控主播': 'Monitored', '当前开播': 'Live Now', '正在录制': 'Recording', '主播实时状态': 'Creator Status', '每 4 秒刷新': 'Refreshes every 4 seconds',
-  '等待开播': 'Waiting', '已开播': 'Live', '未开播': 'Offline', '疑似漏录': 'Possible Miss', '直播录制中': 'Recording Live', '状态未知': 'Unknown', '地址异常': 'Invalid URL',
+  '等待开播': 'Waiting', '已开播': 'Live', '未开播': 'Offline', '疑似漏录': 'Possible Miss', '直播录制中': 'Recording Live', '断流重连中': 'Reconnecting', '正在整理录像': 'Finalizing', '状态未知': 'Unknown', '地址异常': 'Invalid URL',
   '录制服务正在巡检，开播后会自动开始录制': 'Watching for the next live session', '已检测到开播，正在准备录制': 'Live detected; preparing recorder',
   '尚未解析直播间地址': 'Live room URL not resolved', '检查回放': 'Check Replay', '添加直播间后即可巡检并自动录制': 'Add a live room to enable automatic recording',
   '粘贴直播间地址，加入统一主播库': 'Paste a live room URL', '添加': 'Add', '最近录像': 'Recent Recordings', '打开目录': 'Open Folder', '还没有本地录像': 'No local recordings yet',
