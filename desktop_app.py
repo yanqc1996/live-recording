@@ -25,6 +25,7 @@ from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_re
 from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
 from desktop_integrity import MediaIntegrityStore
 from desktop_gifts import GiftLedger
+from desktop_tasks import RecordingTaskQueue
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
 
@@ -142,6 +143,9 @@ class AppState:
         self._replay_candidates: dict[str, dict] = {}
         self._gift_monitors: dict[str, object] = {}
         self._gift_monitor_lock = threading.RLock()
+        self.recording_tasks = RecordingTaskQueue(
+            PROJECT_ROOT / "config" / "recording_tasks.json", self._process_recording_task
+        )
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -187,18 +191,26 @@ class AppState:
         if not candidate or time.time() - float(candidate.get("created_at") or 0) > 24 * 3600:
             return
         settings = self.settings.load()
+        self.recording_tasks.enqueue(
+            "finalize_recording",
+            {"candidate": candidate, "settings": settings},
+            dedupe_key=str(candidate.get("save_file_path") or ""),
+        )
+        self.recorder._append_log(f"桌面控制台：已创建可恢复的录像整理任务：{completed_name}")
+
+    def _process_recording_task(self, task: dict) -> None:
+        if task.get("kind") != "finalize_recording":
+            raise ValueError(f"不支持的录像任务类型：{task.get('kind')}")
+        payload = task.get("payload") or {}
+        candidate = payload.get("candidate") or {}
+        settings = payload.get("settings") or {}
         if bool(settings.get("split_enabled")):
-            threading.Thread(
-                target=self._merge_and_enqueue_completed_recording,
-                args=(candidate, settings), daemon=True,
-                name="recording-merge-upload",
-            ).start()
+            self._merge_and_enqueue_completed_recording(candidate, settings)
             return
         try:
             integrity = self.integrity.inspect(str(candidate.get("save_file_path") or ""))
             if integrity.get("status") == "failed":
-                self.recorder._append_log(f"桌面控制台：录像完整性检查失败，已阻止自动上传：{integrity.get('error')}")
-                return
+                raise RuntimeError(f"录像完整性检查失败：{integrity.get('error')}")
             self.uploads.enqueue_recording(
                 str(candidate.get("save_file_path") or ""),
                 record_name=str(candidate.get("record_name") or ""),
@@ -209,6 +221,7 @@ class AppState:
             )
         except Exception as exc:
             self.recorder._append_log(f"桌面控制台：录制完成后加入百度网盘上传队列失败：{exc}")
+            raise
 
     def _start_gift_monitor(self, record_name: str) -> None:
         if not hasattr(self, "anchors") or not hasattr(self, "_gift_monitor_lock"):
@@ -305,6 +318,7 @@ class AppState:
                 )
             except Exception as upload_exc:
                 self.recorder._append_log(f"桌面控制台：原分段加入上传队列失败：{upload_exc}")
+                raise
 
     def media_library(self) -> dict:
         library = MediaLibrary(self.output_path()).scan()
@@ -492,6 +506,7 @@ def make_handler(state: AppState, token: str):
                         "interaction": state.interaction.status(),
                         "gifts": state.gifts.stats(),
                         "work_pull": state.work_pull.status(),
+                        "recording_tasks": state.recording_tasks.status(),
                         "recordings": recordings,
                         "recording_groups": group_recordings(recordings),
                         "storage": storage,
@@ -937,6 +952,7 @@ def main() -> None:
         state.interaction.stop_audio()
         state.interaction.stop_listening()
         state.stop_all_gift_monitors()
+        state.recording_tasks.stop()
         server.server_close()
 
 

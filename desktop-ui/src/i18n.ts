@@ -48,6 +48,7 @@ const ENGLISH: Record<string, string> = {
   '任务期间防止整机睡眠': 'Prevent Sleep While Active', '录制通知': 'Recording Notifications', '归档完成通知': 'Archive Notifications', '异常通知': 'Error Notifications',
   '软件更新': 'Software Update', '远程更新 JSON 地址': 'Update Manifest URL', '保存地址': 'Save URL', '检查更新': 'Check for Updates', '打开下载': 'Open Download',
   '后台任务中心': 'Background Tasks', '自动录制': 'Automatic Recording', '服务未启动': 'Not Running', '录制中': 'Recording', '巡检中': 'Monitoring', '已停止': 'Stopped',
+  '录像整理队列': 'Recording Processing Queue', '处理中': 'Processing', '有失败': 'Needs Attention', '队列空闲；重启后可自动恢复': 'Queue idle; tasks resume after restart',
   '直播会话': 'Live Session', '未选择主播': 'No Creator Selected', '弹幕': 'Chat', '已连接': 'Connected', '未连接': 'Disconnected', '播放中': 'Playing', '未播放': 'Stopped', '未运行': 'Idle',
   '百度网盘上传': 'Cloud Upload', '队列空闲': 'Queue Idle', '空闲': 'Idle', '录像文件': 'Recording', '尚未运行': 'Not Started', '运行中': 'Running',
   '已完成': 'Completed', '等待中': 'Pending', '上传中': 'Uploading', '已暂停': 'Paused', '已取消': 'Cancelled', '系统': 'System', '关注': 'Follow', '礼物': 'Gift'

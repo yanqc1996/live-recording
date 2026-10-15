@@ -9,6 +9,21 @@ from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_interrupted_upload_returns_to_pending_on_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue_path = root / "config" / "baidupan_queue.json"
+            queue_path.parent.mkdir(parents=True)
+            queue_path.write_text(json.dumps([{
+                "id": "upload-1", "status": "uploading", "save_file_path": "/tmp/a.ts", "created_at": 1,
+            }]), encoding="utf-8")
+
+            manager = BaiduPanUploadManager(root, root)
+
+            recovered = manager._load_queue()[0]
+            self.assertEqual("pending", recovered["status"])
+            self.assertIn("自动恢复", recovered["error"])
+
     def test_reconcile_enqueues_stable_untracked_recordings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -29,6 +29,15 @@ class _Integrity:
         return {"status": "healthy"}
 
 
+class _Tasks:
+    def __init__(self, state):
+        self.state = state
+
+    def enqueue(self, kind, payload, dedupe_key=""):
+        self.state._process_recording_task({"kind": kind, "payload": payload})
+        return {"status": "success", "dedupe_key": dedupe_key}
+
+
 class AppStateRecordingUploadTest(unittest.TestCase):
     def test_concurrent_recordings_keep_separate_upload_candidates(self):
         state = AppState.__new__(AppState)
@@ -37,6 +46,7 @@ class AppStateRecordingUploadTest(unittest.TestCase):
         state.settings = _Settings()
         state.recorder = _Recorder()
         state.integrity = _Integrity()
+        state.recording_tasks = _Tasks(state)
 
         state._on_recorder_log("主播甲 准备开始录制视频: /tmp/a.ts")
         state._on_recorder_log("主播乙 准备开始录制视频: /tmp/b.ts")

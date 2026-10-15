@@ -86,7 +86,20 @@ class BaiduPanUploadManager:
         self._auth_process: subprocess.Popen | None = None
         self._auth_state = {"status": "idle", "authorization_url": "", "message": "尚未授权", "output": ""}
         self._progresses: dict[str, dict] = {}
+        self._recover_interrupted_uploads()
         self._ensure_worker()
+
+    def _recover_interrupted_uploads(self) -> None:
+        """A fresh process cannot own an old uploading task; safely return it to pending."""
+        with self._lock:
+            queue = self._load_queue()
+            changed = False
+            for item in queue:
+                if item.get("status") == "uploading":
+                    item.update({"status": "pending", "updated_at": int(time.time()), "error": "应用重启后已自动恢复上传任务"})
+                    changed = True
+            if changed:
+                self._save_queue(queue)
 
     def _append_log(self, line: str) -> None:
         line = line.rstrip()
