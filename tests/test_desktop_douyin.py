@@ -24,9 +24,10 @@ PROFILE_URL = (
 
 
 class FakeResponse:
-    def __init__(self, payload=None, text="", cookies=None):
+    def __init__(self, payload=None, text="", cookies=None, url=""):
         self._payload = payload or {}
         self.text = text
+        self.url = url
         cookie_values = cookies or {}
         self.cookies = type("Cookies", (), {"get_dict": lambda self: cookie_values})()
 
@@ -57,6 +58,28 @@ class DouyinProfileResolverTest(unittest.TestCase):
     def test_extracts_short_url_from_mobile_share_text(self):
         text = "复制此链接，打开抖音搜索 https://v.douyin.com/AbCd12/ 8@1.com"
         self.assertEqual("https://v.douyin.com/AbCd12/", extract_douyin_share_url(text))
+
+    @patch("desktop_douyin.requests.get")
+    def test_mobile_profile_short_link_expands_before_live_lookup(self, request_get):
+        sec_uid = "MS4wLjABAAAATljZ05lI6oH0CVjp9N0mOr9_oGeuAWlKJwV1NEGDBGNeTViQIXowqsAeRF-UDUdj"
+        request_get.side_effect = [
+            FakeResponse(url=f"https://www.iesdouyin.com/share/user/{sec_uid}?from_ssr=1"),
+            FakeResponse({"status_code": 0, "user": {
+                "nickname": "叫我小榕", "unique_id": "73210920013", "uid": "7493456082678105146",
+                "sec_uid": sec_uid, "room_id_str": "7697135735631104768", "live_status": 1,
+            }}),
+        ]
+
+        result = resolve_live_room(
+            DouyinAuthState.from_cookie("sessionid_ss=login-token"),
+            "8- 长按复制此条消息，打开抖音搜索，查看TA的更多作品。 https://v.douyin.com/CLqYVoWgH-g/ 0@9.com :9pm",
+        )
+
+        self.assertTrue(result["is_live"])
+        self.assertEqual("叫我小榕", result["nickname"])
+        self.assertEqual("https://live.douyin.com/73210920013", result["room_url"])
+        self.assertEqual(f"https://www.douyin.com/user/{sec_uid}", result["source_url"])
+        self.assertEqual(2, request_get.call_count)
 
     def test_extracts_url_without_trailing_chinese_punctuation(self):
         self.assertEqual(PROFILE_URL, extract_douyin_share_url(f"分享主播主页：{PROFILE_URL}，欢迎关注"))

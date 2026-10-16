@@ -336,6 +336,32 @@ def extract_douyin_share_url(value: str) -> str:
     return value
 
 
+def _expand_douyin_short_url(value: str) -> str:
+    """Expand a mobile share URL before deciding whether it is a profile or room."""
+    parsed = urllib.parse.urlparse(value)
+    if parsed.hostname not in {"v.douyin.com", "www.iesdouyin.com", "iesdouyin.com"}:
+        return value
+    response = requests.get(
+        value,
+        headers={
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "user-agent": UA,
+        },
+        allow_redirects=True,
+        timeout=15,
+    )
+    response.raise_for_status()
+    final_url = str(getattr(response, "url", "") or value)
+    final_host = (urllib.parse.urlparse(final_url).hostname or "").lower()
+    if not (final_host == "douyin.com" or final_host.endswith(".douyin.com") or final_host == "iesdouyin.com" or final_host.endswith(".iesdouyin.com")):
+        raise ValueError("分享短链跳转到了非抖音地址")
+    sec_user_id = _sec_user_id(final_url)
+    if sec_user_id:
+        return f"{DOUYIN_WEB_ORIGIN}/user/{sec_user_id}"
+    return final_url
+
+
 def _nested_value(value, key: str):
     if isinstance(value, str):
         try:
@@ -885,6 +911,7 @@ def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
     value = extract_douyin_share_url(value)
     if not value:
         raise ValueError("请粘贴直播间地址、用户主页或分享链接")
+    value = _expand_douyin_short_url(value)
     if "live.douyin.com/" in value:
         info = fetch_live_room_info(auth, value)
         room_url = f"{DOUYIN_LIVE_ORIGIN}/{info.web_rid}"
