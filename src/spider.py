@@ -65,6 +65,36 @@ async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: Option
     return play_url_list
 
 
+async def get_douyin_reflow_room_data(room_id: str, sec_uid: str, proxy_addr: OptionalStr = None,
+                                      cookies: OptionalStr = None) -> dict:
+    """Fetch room data from the mobile share endpoint when the PC entry omits its room list."""
+    user_agent = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0')
+    headers = {
+        'User-Agent': user_agent,
+        'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.3',
+        'Referer': 'https://live.douyin.com/',
+    }
+    if cookies:
+        headers['Cookie'] = cookies
+    params = {
+        'verifyFp': 'verify_hwj52020_7szNlAB7_pxNY_48Vh_ALKF_GA1Uf3yteoOY',
+        'type_id': '0', 'live_id': '1', 'room_id': room_id, 'sec_user_id': sec_uid,
+        'version_code': '99.99.99', 'app_id': '1128',
+    }
+    api = f'https://webcast.amemv.com/webcast/room/reflow/info/?{urllib.parse.urlencode(params)}'
+    api += '&a_bogus=' + ab_sign(urllib.parse.urlparse(api).query, user_agent)
+    raw = await async_req(url=api, proxy_addr=proxy_addr, headers=headers)
+    payload = json.loads(raw or '{}')
+    data = payload.get('data') or {}
+    room_data = data.get('room') or {}
+    if not room_data:
+        raise RuntimeError(payload.get('status_msg') or 'Douyin reflow endpoint returned no room data')
+    owner = room_data.get('owner') or data.get('user') or {}
+    room_data['anchor_name'] = owner.get('nickname') or ''
+    return room_data
+
+
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
@@ -100,10 +130,20 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
             if not json_str:
                 raise Exception("it triggered risk control")
             json_data = json.loads(json_str)['data']
-            if not json_data['data']:
-                raise Exception(f"{url} VR live is not supported")
-            room_data = json_data['data'][0]
-            room_data['anchor_name'] = json_data['user']['nickname']
+            rooms = json_data.get('data') or []
+            if rooms:
+                room_data = rooms[0]
+                room_data['anchor_name'] = (json_data.get('user') or {}).get('nickname') or ''
+            else:
+                user = json_data.get('user') or {}
+                # Some PC entry responses omit enter_room_id for audio/special-layout
+                # rooms.  The reflow endpoint also accepts the anchor id and resolves
+                # it to the current room id.
+                room_id = str(json_data.get('enter_room_id') or user.get('id_str') or user.get('id') or '')
+                sec_uid = str(user.get('sec_uid') or '')
+                if not room_id or not sec_uid:
+                    raise RuntimeError('Douyin PC entry returned no room data or reflow identity')
+                room_data = await get_douyin_reflow_room_data(room_id, sec_uid, proxy_addr, cookies)
         except Exception as e:
             raise Exception(f"Douyin web data fetch error, because {e}.")
 
@@ -152,28 +192,8 @@ async def get_douyin_app_stream_data(url: str, proxy_addr: OptionalStr = None, c
         headers['Cookie'] = cookies
 
     async def get_app_data(room_id: str, sec_uid: str) -> dict:
-        app_params = {
-            "verifyFp": "verify_hwj52020_7szNlAB7_pxNY_48Vh_ALKF_GA1Uf3yteoOY",
-            "type_id": "0",
-            "live_id": "1",
-            "room_id": room_id,
-            "sec_user_id": sec_uid,
-            "version_code": "99.99.99",
-            "app_id": "1128"
-        }
-        api2 = f'https://webcast.amemv.com/webcast/room/reflow/info/?{urllib.parse.urlencode(app_params)}'
-        a_bogus = ab_sign(urllib.parse.urlparse(api2).query, headers['User-Agent'])
-        api2 += "&a_bogus=" + a_bogus
         try:
-            json_str2 = await async_req(url=api2, proxy_addr=proxy_addr, headers=headers)
-            if not json_str2:
-                raise Exception("it triggered risk control")
-            json_data2 = json.loads(json_str2)['data']
-            if not json_data2.get('room'):
-                raise Exception(f"{url} VR live is not supported")
-            room_data2 = json_data2['room']
-            room_data2['anchor_name'] = room_data2['owner']['nickname']
-            return room_data2
+            return await get_douyin_reflow_room_data(room_id, sec_uid, proxy_addr, cookies)
         except Exception as e:
             raise Exception(f"Douyin app data fetch error, because {e}.")
 
