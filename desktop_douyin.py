@@ -77,6 +77,27 @@ def _protobuf_wire_fields(payload: bytes) -> dict[int, list[object]]:
     return fields
 
 
+def _protobuf_wire_shape(payload: bytes, nested_fields: tuple[int, ...] = (15,)) -> dict:
+    """Describe protobuf layout without retaining message values or user content."""
+    try:
+        fields = _protobuf_wire_fields(payload)
+    except (TypeError, ValueError, IndexError):
+        return {"parse_error": True, "bytes": len(payload)}
+    shape: dict[str, list[dict]] = {}
+    for number, values in fields.items():
+        samples = []
+        for value in values[:3]:
+            if isinstance(value, bytes):
+                sample = {"kind": "bytes", "length": len(value)}
+                if number in nested_fields and value:
+                    sample["nested"] = _protobuf_wire_shape(value, ())
+            else:
+                sample = {"kind": "varint", "range": "large" if int(value) > MAX_GIFT_COMBO_COUNT else "small"}
+            samples.append(sample)
+        shape[str(number)] = samples
+    return {"bytes": len(payload), "fields": shape}
+
+
 def _gift_wire_metadata(payload: bytes) -> dict:
     try:
         fields = _protobuf_wire_fields(payload)
@@ -1060,7 +1081,20 @@ class DouyinLiveSession:
             gift_id = str(msg.giftId or msg.gift.id or wire.get("gift_id") or "")
             gift_name = str(msg.gift.name or wire.get("gift_name") or "未知礼物")
             combo_count = _gift_combo_count(msg.comboCount, wire.get("combo_count"), wire.get("repeat_count"))
+            shape = _protobuf_wire_shape(item.payload)
+            fingerprint = hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+            schema_event = {
+                "type": "gift_schema",
+                "source_method": method,
+                "message_id": str(getattr(item, "msgId", "") or ""),
+                "schema_fingerprint": fingerprint,
+                "schema": shape,
+                "accepted": combo_count is not None,
+                "gift_name_resolved": bool(gift_name and gift_name != "未知礼物"),
+                "user_resolved": bool(getattr(msg.user, "nickname", "")),
+            }
             if combo_count is None:
+                self.on_event(schema_event)
                 self.on_event({
                     "type": "error",
                     "message": "收到字段结构异常的礼物消息，已忽略以防止错误计数",
@@ -1079,6 +1113,7 @@ class DouyinLiveSession:
                 "content": f"送出 {gift_name} x {combo_count}",
                 "source_method": method,
             })
+            self.on_event(schema_event)
         elif method == "WebcastSocialMessage":
             msg = Live_pb2.SocialMessage()
             msg.ParseFromString(item.payload)
@@ -1155,10 +1190,11 @@ class DouyinInteractionManager:
 
     def _append(self, event: dict) -> None:
         event = {"time": time.time(), **event}
-        with self._lock:
-            if self._events.maxlen and len(self._events) == self._events.maxlen:
-                self._offset += 1
-            self._events.append(event)
+        if event.get("type") != "gift_schema":
+            with self._lock:
+                if self._events.maxlen and len(self._events) == self._events.maxlen:
+                    self._offset += 1
+                self._events.append(event)
         if self._event_callback:
             try:
                 self._event_callback(dict(event))

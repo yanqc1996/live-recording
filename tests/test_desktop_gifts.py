@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_douyin import DouyinAuthState, DouyinLiveSession, _gift_combo_count, _gift_wire_metadata
+from desktop_douyin import DouyinAuthState, DouyinLiveSession, _gift_combo_count, _gift_wire_metadata, _protobuf_wire_shape
 from desktop_gifts import GiftLedger
 from douyin_static import Live_pb2
 
@@ -27,6 +27,13 @@ class GiftLedgerTest(unittest.TestCase):
     def test_implausible_combo_identifier_is_rejected(self):
         self.assertIsNone(_gift_combo_count(2974623777696105, 2974623777696105))
         self.assertEqual(3, _gift_combo_count(2974623777696105, 3))
+
+    def test_wire_shape_does_not_store_values(self):
+        shape = _protobuf_wire_shape(_field(2, b"secret") + _field(6, 2974623777696105))
+        self.assertEqual("bytes", shape["fields"]["2"][0]["kind"])
+        self.assertEqual(6, shape["fields"]["2"][0]["length"])
+        self.assertEqual("large", shape["fields"]["6"][0]["range"])
+        self.assertNotIn("secret", json.dumps(shape))
 
     def test_session_does_not_emit_gift_for_implausible_combo(self):
         events = []
@@ -53,6 +60,19 @@ class GiftLedgerTest(unittest.TestCase):
 
             self.assertEqual(0, ledger.stats()["gift_count"])
             self.assertEqual([], json.loads(path.read_text())["events"])
+
+    def test_ledger_keeps_bounded_deduplicated_schema_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = GiftLedger(Path(directory) / "gift_ledger.json")
+            context = ledger.begin({"id": "anchor-1", "name": "主播"}, "room")
+            event = {"type": "gift_schema", "source_method": "WebcastGiftMessageV2", "schema_fingerprint": "abc", "schema": {"bytes": 12}, "accepted": False}
+            ledger.record(event, context)
+            ledger.record(event, context)
+
+            samples = ledger.stats()["schema_samples"]
+            self.assertEqual(1, len(samples))
+            self.assertEqual(2, samples[0]["count"])
+            self.assertNotIn("message_id", samples[0])
 
     def test_gift_wire_metadata_reads_repeat_and_value(self):
         gift = _field(5, 88) + _field(12, 10) + _field(16, "小心心".encode())

@@ -43,6 +43,7 @@ class GiftLedger:
             if isinstance(value, dict):
                 value.setdefault("events", [])
                 value.setdefault("prices", {})
+                value.setdefault("diagnostics", [])
                 events = value["events"] if isinstance(value["events"], list) else []
                 valid_events = [item for item in events if isinstance(item, dict) and _valid_event(item)]
                 if len(valid_events) != len(events):
@@ -51,7 +52,7 @@ class GiftLedger:
                 return value
         except (OSError, ValueError, TypeError):
             pass
-        return {"events": [], "prices": {}}
+        return {"events": [], "prices": {}, "diagnostics": []}
 
     def _save(self, value: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +83,8 @@ class GiftLedger:
             self._combos.clear()
 
     def record(self, event: dict, context: dict | None = None) -> dict | None:
+        if event.get("type") == "gift_schema":
+            return self._record_schema(event, context)
         if event.get("type") == "gift_rank_snapshot":
             return self._record_rank_snapshot(event, context)
         if event.get("type") != "gift":
@@ -143,6 +146,46 @@ class GiftLedger:
             data["events"] = data["events"][-20000:]
             self._save(data)
             return item
+
+    def _record_schema(self, event: dict, context: dict | None = None) -> dict | None:
+        """Keep a bounded, value-free history of gift wire layouts for compatibility checks."""
+        with self._lock:
+            active_context = context or self._context
+            if not active_context:
+                return None
+            data = self._load()
+            diagnostics = data.setdefault("diagnostics", [])
+            session_id = str(active_context.get("session_id") or "")
+            fingerprint = str(event.get("schema_fingerprint") or "")
+            method = str(event.get("source_method") or "")
+            accepted = bool(event.get("accepted"))
+            existing = next((item for item in reversed(diagnostics) if
+                item.get("session_id") == session_id
+                and item.get("fingerprint") == fingerprint
+                and item.get("method") == method
+                and bool(item.get("accepted")) == accepted), None)
+            now = float(event.get("time") or time.time())
+            if existing:
+                existing["last_seen"] = now
+                existing["count"] = int(existing.get("count") or 1) + 1
+            else:
+                diagnostics.append({
+                    "session_id": session_id,
+                    "anchor_id": str(active_context.get("anchor_id") or ""),
+                    "anchor_name": str(active_context.get("anchor_name") or ""),
+                    "method": method,
+                    "fingerprint": fingerprint,
+                    "schema": event.get("schema") if isinstance(event.get("schema"), dict) else {},
+                    "accepted": accepted,
+                    "gift_name_resolved": bool(event.get("gift_name_resolved")),
+                    "user_resolved": bool(event.get("user_resolved")),
+                    "first_seen": now,
+                    "last_seen": now,
+                    "count": 1,
+                })
+            data["diagnostics"] = diagnostics[-50:]
+            self._save(data)
+            return diagnostics[-1] if diagnostics else None
 
     def _record_rank_snapshot(self, event: dict, context: dict | None = None) -> dict | None:
         """Persist contribution-rank deltas when anonymous WebSocket omits gift messages."""
@@ -255,4 +298,5 @@ class GiftLedger:
                 "gifts": sorted(gifts.values(), key=lambda item: (item["sound_wave"], item["quantity"]), reverse=True),
                 "users": sorted(users.values(), key=lambda item: (item["sound_wave"], item["quantity"]), reverse=True),
                 "recent": list(reversed(events[-30:])),
+                "schema_samples": list(reversed(data.get("diagnostics", [])[-10:])),
             }
