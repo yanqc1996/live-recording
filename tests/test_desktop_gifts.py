@@ -3,8 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from desktop_douyin import _gift_wire_metadata
+from desktop_douyin import DouyinAuthState, DouyinLiveSession, _gift_combo_count, _gift_wire_metadata
 from desktop_gifts import GiftLedger
+from douyin_static import Live_pb2
 
 
 def _varint(value: int) -> bytes:
@@ -23,6 +24,36 @@ def _field(number: int, value: int | bytes) -> bytes:
 
 
 class GiftLedgerTest(unittest.TestCase):
+    def test_implausible_combo_identifier_is_rejected(self):
+        self.assertIsNone(_gift_combo_count(2974623777696105, 2974623777696105))
+        self.assertEqual(3, _gift_combo_count(2974623777696105, 3))
+
+    def test_session_does_not_emit_gift_for_implausible_combo(self):
+        events = []
+        session = DouyinLiveSession("https://live.douyin.com/1", DouyinAuthState.from_cookie(""), events.append)
+        gift = Live_pb2.GiftMessage()
+        gift.giftId = "1"
+        gift.comboCount = 2974623777696105
+        item = Live_pb2.Message(
+            method="WebcastGiftMessageV2", payload=gift.SerializeToString()
+        )
+
+        session._handle_message(item)
+
+        self.assertFalse(any(event.get("type") == "gift" for event in events))
+
+    def test_ledger_discards_historical_impossible_quantities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gift_ledger.json"
+            path.write_text(json.dumps({"events": [{
+                "gift_id": "1", "gift_name": "未知礼物", "quantity": 2974623777696105,
+                "combo_count": 2974623777696105, "user": {"id": "685"},
+            }], "prices": {}}, ensure_ascii=False))
+            ledger = GiftLedger(path)
+
+            self.assertEqual(0, ledger.stats()["gift_count"])
+            self.assertEqual([], json.loads(path.read_text())["events"])
+
     def test_gift_wire_metadata_reads_repeat_and_value(self):
         gift = _field(5, 88) + _field(12, 10) + _field(16, "小心心".encode())
         payload = _field(2, b"88") + _field(5, 3) + _field(6, 3) + _field(9, 1) + _field(15, gift)

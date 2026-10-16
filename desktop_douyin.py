@@ -37,6 +37,7 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 )
+MAX_GIFT_COMBO_COUNT = 1_000_000
 
 
 def _protobuf_wire_fields(payload: bytes) -> dict[int, list[object]]:
@@ -95,6 +96,22 @@ def _gift_wire_metadata(payload: bytes) -> dict:
         }
     except (TypeError, ValueError, IndexError):
         return {}
+
+
+def _gift_combo_count(*values: object) -> int | None:
+    """Choose a plausible combo count and reject schema-mismatched identifiers."""
+    candidates = []
+    for value in values:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if parsed:
+            candidates.append(parsed)
+    plausible = [value for value in candidates if 0 < value <= MAX_GIFT_COMBO_COUNT]
+    if plausible:
+        return plausible[0]
+    return None if candidates else 1
 
 
 def _audio_relay_command(ffmpeg: str, source_url: str) -> list[str]:
@@ -1042,7 +1059,14 @@ class DouyinLiveSession:
             wire = _gift_wire_metadata(item.payload)
             gift_id = str(msg.giftId or msg.gift.id or wire.get("gift_id") or "")
             gift_name = str(msg.gift.name or wire.get("gift_name") or "未知礼物")
-            combo_count = int(msg.comboCount or wire.get("combo_count") or wire.get("repeat_count") or 1)
+            combo_count = _gift_combo_count(msg.comboCount, wire.get("combo_count"), wire.get("repeat_count"))
+            if combo_count is None:
+                self.on_event({
+                    "type": "error",
+                    "message": "收到字段结构异常的礼物消息，已忽略以防止错误计数",
+                    "source_method": method,
+                })
+                return
             self.on_event({
                 "type": "gift",
                 "user": _user_to_dict(msg.user),

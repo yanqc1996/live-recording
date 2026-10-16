@@ -10,6 +10,23 @@ import uuid
 from pathlib import Path
 
 
+# A single WebSocket gift event can contain a combo total, but room/user IDs are
+# also large integers and may land in that field when Douyin changes its wire
+# schema.  Treat values beyond a generous real-world combo ceiling as corrupt.
+MAX_GIFT_EVENT_QUANTITY = 1_000_000
+
+
+def _valid_event(item: dict) -> bool:
+    if item.get("rank_snapshot"):
+        return True
+    try:
+        quantity = int(item.get("quantity") or 0)
+        combo_count = int(item.get("combo_count") or quantity)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= quantity <= MAX_GIFT_EVENT_QUANTITY and 0 <= combo_count <= MAX_GIFT_EVENT_QUANTITY
+
+
 class GiftLedger:
     def __init__(self, path: Path):
         self.path = path
@@ -26,6 +43,11 @@ class GiftLedger:
             if isinstance(value, dict):
                 value.setdefault("events", [])
                 value.setdefault("prices", {})
+                events = value["events"] if isinstance(value["events"], list) else []
+                valid_events = [item for item in events if isinstance(item, dict) and _valid_event(item)]
+                if len(valid_events) != len(events):
+                    value["events"] = valid_events
+                    self._save(value)
                 return value
         except (OSError, ValueError, TypeError):
             pass
@@ -79,6 +101,8 @@ class GiftLedger:
             gift_id = str(event.get("gift_id") or "")
             gift_name = str(event.get("gift_name") or "未知礼物")
             combo_count = max(1, int(event.get("combo_count") or 1))
+            if combo_count > MAX_GIFT_EVENT_QUANTITY:
+                return None
             combo_key = "|".join((str(active_context.get("session_id") or ""), str(user.get("id") or user.get("sec_uid") or user.get("nickname") or "anonymous"), gift_id or gift_name))
             previous = self._combos.get(combo_key)
             quantity = combo_count
