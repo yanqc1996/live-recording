@@ -29,6 +29,35 @@ class _Integrity:
         return {"status": "healthy"}
 
 
+class _Anchors:
+    def __init__(self, anchor):
+        self.anchor = dict(anchor)
+
+    def get(self, anchor_id):
+        if self.anchor["id"] != anchor_id:
+            raise IndexError("主播不存在")
+        return dict(self.anchor)
+
+    def list(self):
+        return [dict(self.anchor)]
+
+    def update(self, anchor_id, updates):
+        if self.anchor["id"] != anchor_id:
+            raise IndexError("主播不存在")
+        self.anchor.update(updates)
+        return dict(self.anchor)
+
+
+class _Interaction:
+    def __init__(self, result):
+        self.result = result
+        self.values = []
+
+    def resolve_live_room(self, value):
+        self.values.append(value)
+        return dict(self.result)
+
+
 class _Tasks:
     def __init__(self, state):
         self.state = state
@@ -39,6 +68,39 @@ class _Tasks:
 
 
 class AppStateRecordingUploadTest(unittest.TestCase):
+    def test_resolve_anchor_replaces_short_link_with_stable_profile_and_all_ids(self):
+        state = AppState.__new__(AppState)
+        state.anchors = _Anchors({
+            "id": "a1", "name": "未命名主播", "profile_url": "https://v.douyin.com/abc/",
+            "live_url": "", "web_rid": "", "room_id": "", "sec_user_id": "", "platform_user_id": "",
+        })
+        state.interaction = _Interaction({
+            "is_live": True, "nickname": "主播", "profile_url": "https://www.douyin.com/user/sec-1",
+            "room_url": "https://live.douyin.com/123", "web_rid": "123", "room_id": "456",
+            "anchor_id": "789", "sec_anchor_id": "sec-1",
+        })
+
+        anchor, _ = state.resolve_anchor("a1")
+
+        self.assertEqual("主播", anchor["name"])
+        self.assertEqual("https://www.douyin.com/user/sec-1", anchor["profile_url"])
+        self.assertEqual("https://live.douyin.com/123", anchor["live_url"])
+        self.assertEqual("sec-1", anchor["sec_user_id"])
+        self.assertEqual("live", anchor["last_live_status"])
+
+    def test_live_result_without_room_identity_is_marked_incomplete(self):
+        state = AppState.__new__(AppState)
+        state.anchors = _Anchors({
+            "id": "a1", "name": "主播", "profile_url": "https://v.douyin.com/abc/",
+            "live_url": "", "web_rid": "", "room_id": "", "sec_user_id": "", "platform_user_id": "",
+        })
+        state.interaction = _Interaction({"is_live": True, "nickname": "主播", "room_url": "", "web_rid": ""})
+
+        anchor, _ = state.resolve_anchor("a1")
+
+        self.assertEqual("incomplete", anchor["last_live_status"])
+        self.assertIn("未获得直播间地址", anchor["last_check_error"])
+
     def test_concurrent_recordings_keep_separate_upload_candidates(self):
         state = AppState.__new__(AppState)
         state._recording_candidates = {}

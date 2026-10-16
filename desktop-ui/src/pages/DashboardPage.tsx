@@ -19,7 +19,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
   const recordings = state.recording_groups || [];
   const roomStates = state.status?.room_states || {};
   const displayState = (anchor: Anchor) => {
-    if (!anchorLiveUrl(anchor)) return 'error';
+    if (!anchorLiveUrl(anchor)) return anchor.last_live_status === 'live' ? 'incomplete' : 'error';
     if (anchor.enabled_recording === false) return 'paused';
     const runtime = roomStates[anchor.id]?.state;
     if (runtime && ['recording','live','missed','reconnecting','finalizing','waiting'].includes(runtime)) return runtime;

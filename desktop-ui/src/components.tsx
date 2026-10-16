@@ -12,7 +12,7 @@ export function Panel({ title, badge, actions, children }: { title: string; badg
 
 export function Empty({ children }: { children: ReactNode }) { return <div className="empty"><Text c="dimmed">{children}</Text></div>; }
 export function StatusBadge({ value }: { value?: string }) {
-  const map: Record<string, [string, string]> = { live: ['已开播', 'green'], missed: ['疑似漏录', 'red'], offline: ['未开播', 'gray'], error: ['地址异常', 'red'], unknown: ['状态未知', 'gray'], recording: ['直播录制中', 'red'], reconnecting: ['断流重连中', 'orange'], finalizing: ['正在整理录像', 'blue'], waiting: ['等待开播', 'yellow'], pending: ['等待中', 'yellow'], stopped: ['服务已停止', 'gray'], uploading: ['上传中', 'blue'], completed: ['已完成', 'green'], failed: ['失败', 'red'], paused: ['已暂停', 'gray'], cancelled: ['已取消', 'gray'] };
+  const map: Record<string, [string, string]> = { live: ['已开播', 'green'], incomplete: ['资料不完整', 'orange'], missed: ['疑似漏录', 'red'], offline: ['未开播', 'gray'], error: ['地址异常', 'red'], unknown: ['状态未知', 'gray'], recording: ['直播录制中', 'red'], reconnecting: ['断流重连中', 'orange'], finalizing: ['正在整理录像', 'blue'], waiting: ['等待开播', 'yellow'], pending: ['等待中', 'yellow'], stopped: ['服务已停止', 'gray'], uploading: ['上传中', 'blue'], completed: ['已完成', 'green'], failed: ['失败', 'red'], paused: ['已暂停', 'gray'], cancelled: ['已取消', 'gray'] };
   const [label, color] = map[value || 'unknown'] || [value || '未知', 'gray'];
   return <Badge variant="light" color={color}>{label}</Badge>;
 }

@@ -166,6 +166,55 @@ class AppState:
             raise ValueError("该主播还没有作品主页或 sec_user_id")
         return value
 
+    @staticmethod
+    def _resolution_status(live_room: dict) -> tuple[str, str]:
+        if live_room.get("is_live") and not (live_room.get("room_url") or live_room.get("web_rid")):
+            return "incomplete", "检测到开播，但未获得直播间地址或 web_rid"
+        return ("live" if live_room.get("is_live") else "offline"), ""
+
+    def resolve_anchor(self, anchor_id: str) -> tuple[dict, dict]:
+        anchor = self.anchors.get(anchor_id)
+        stable_profile = (
+            f"https://www.douyin.com/user/{anchor.get('sec_user_id')}"
+            if anchor.get("sec_user_id") else ""
+        )
+        value = str(stable_profile or anchor.get("profile_url") or anchor.get("live_url") or "").strip()
+        live_room = self.interaction.resolve_live_room(value)
+        status, error = self._resolution_status(live_room)
+        updates = {
+            "profile_url": live_room.get("profile_url") or live_room.get("source_url") or anchor.get("profile_url", ""),
+            "platform_user_id": live_room.get("anchor_id", "") or anchor.get("platform_user_id", ""),
+            "sec_user_id": live_room.get("sec_anchor_id", "") or anchor.get("sec_user_id", ""),
+            "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
+            "web_rid": live_room.get("web_rid", "") or anchor.get("web_rid", ""),
+            "room_id": live_room.get("room_id", "") or anchor.get("room_id", ""),
+            "last_live_status": status,
+            "last_resolved_at": int(time.time()),
+            "last_check_error": error,
+        }
+        if live_room.get("nickname"):
+            updates["name"] = live_room["nickname"]
+        return self.anchors.update(anchor_id, updates), live_room
+
+    def repair_incomplete_anchors(self) -> list[dict]:
+        results = []
+        for anchor in self.anchors.list():
+            if anchor.get("enabled_recording") is False:
+                continue
+            if anchor.get("live_url") or "live.douyin.com/" in str(anchor.get("profile_url") or ""):
+                continue
+            try:
+                updated, live_room = self.resolve_anchor(str(anchor.get("id") or ""))
+                results.append({"anchor": updated, "live_room": live_room, "ok": True})
+            except Exception as exc:
+                updated = self.anchors.update(str(anchor.get("id") or ""), {
+                    "last_live_status": "error", "last_resolved_at": int(time.time()), "last_check_error": str(exc),
+                })
+                results.append({"anchor": updated, "live_room": None, "ok": False, "error": str(exc)})
+        if results:
+            self.sync_recording_rooms()
+        return results
+
     def _on_recorder_log(self, line: str) -> None:
         candidate_match = re.search(r"(?P<name>.+?)\s+准备开始录制(?:视频|音频):\s*(?P<path>.+)$", line.strip())
         if candidate_match:
@@ -343,25 +392,12 @@ class AppState:
         results = []
         for anchor in self.anchors.list():
             anchor_id = anchor.get("id", "")
-            value = str(anchor.get("profile_url") or anchor.get("live_url") or "").strip()
-            updates = {"last_resolved_at": int(time.time()), "last_check_error": ""}
             live_room = None
             try:
-                live_room = self.interaction.resolve_live_room(value)
-                updates.update({
-                    "platform_user_id": live_room.get("anchor_id", ""),
-                    "sec_user_id": live_room.get("sec_anchor_id", "") or anchor.get("sec_user_id", ""),
-                    "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
-                    "web_rid": live_room.get("web_rid", ""),
-                    "room_id": live_room.get("room_id", ""),
-                    "last_live_status": "live" if live_room.get("is_live") else "offline",
-                })
-                if live_room.get("nickname"):
-                    updates["name"] = live_room["nickname"]
-                updated = self.anchors.update(anchor_id, updates)
+                updated, live_room = self.resolve_anchor(anchor_id)
                 results.append({"anchor": updated, "live_room": live_room, "ok": True})
             except Exception as exc:
-                updates.update({"last_live_status": "error", "last_check_error": str(exc)})
+                updates = {"last_resolved_at": int(time.time()), "last_live_status": "error", "last_check_error": str(exc)}
                 try:
                     updated = self.anchors.update(anchor_id, updates)
                 except Exception:
@@ -650,21 +686,7 @@ def make_handler(state: AppState, token: str):
                     self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "resolve":
                     anchor_id = parts[2]
-                    anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
-                    if not anchor:
-                        raise IndexError("主播不存在")
-                    live_room = state.interaction.resolve_live_room(str(anchor.get("profile_url") or anchor.get("live_url") or ""))
-                    updates = {
-                        "platform_user_id": live_room.get("anchor_id", ""),
-                        "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
-                        "web_rid": live_room.get("web_rid", ""),
-                        "room_id": live_room.get("room_id", ""),
-                        "last_live_status": "live" if live_room.get("is_live") else "offline",
-                        "last_resolved_at": int(time.time()),
-                    }
-                    if live_room.get("nickname"):
-                        updates["name"] = live_room["nickname"]
-                    anchor = state.anchors.update(anchor_id, updates)
+                    anchor, live_room = state.resolve_anchor(anchor_id)
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "live_room": live_room, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "use-recording":
@@ -758,6 +780,7 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/baidupan/clear-finished":
                     self._json({"baidupan": state.uploads.clear_finished()})
                 elif path == "/api/start":
+                    state.repair_incomplete_anchors()
                     state.sync_recording_rooms()
                     storage = state.storage_status()
                     if storage.get("level") == "critical":
