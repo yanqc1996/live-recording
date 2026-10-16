@@ -173,6 +173,24 @@ class RoomStoreTest(unittest.TestCase):
             self.assertIn("https://live.douyin.com/1,主播: 甲", content)
             self.assertIn("#https://live.douyin.com/2,主播: 乙", content)
 
+    def test_sync_from_anchors_includes_reflow_identity_for_radio_rooms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "URL_config.ini"
+            store = RoomStore(path)
+
+            store.sync_from_anchors([{
+                "name": "电台主播",
+                "live_url": "https://live.douyin.com/404-room",
+                "room_id": "7697135735631104768",
+                "sec_user_id": "sec-radio",
+                "enabled_recording": True,
+            }])
+
+            content = path.read_text(encoding="utf-8-sig")
+            self.assertIn("lr_room_id=7697135735631104768", content)
+            self.assertIn("lr_sec_user_id=sec-radio", content)
+            self.assertIn(",主播: 电台主播", content)
+
 
 class SettingsStoreTest(unittest.TestCase):
     def test_save_keeps_cookie_and_disables_custom_script(self):

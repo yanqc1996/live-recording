@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,6 +188,13 @@ class RoomStore:
                 if not url or url in seen:
                     continue
                 seen.add(url)
+                room_id = str(anchor.get("room_id") or "").strip()
+                sec_user_id = str(anchor.get("sec_user_id") or "").strip()
+                if "live.douyin.com/" in url and room_id and sec_user_id:
+                    url += "?" + urllib.parse.urlencode({
+                        "lr_room_id": room_id,
+                        "lr_sec_user_id": sec_user_id,
+                    })
                 name = str(anchor.get("name") or "未命名主播").strip().replace("\n", " ").replace(",", "，")
                 value = f"{url},主播: {name}"
                 entries.append(value if bool(anchor.get("enabled_recording", True)) else f"#{value}")

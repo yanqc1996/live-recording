@@ -9,6 +9,7 @@ Copyright (c) 2023-2025 by Hmily, All Rights Reserved.
 Function: Get live stream data.
 """
 
+import asyncio
 import hashlib
 import random
 import subprocess
@@ -95,6 +96,21 @@ async def get_douyin_reflow_room_data(room_id: str, sec_uid: str, proxy_addr: Op
     return room_data
 
 
+async def get_douyin_reflow_room_data_with_retry(
+        room_id: str, sec_uid: str, proxy_addr: OptionalStr = None,
+        cookies: OptionalStr = None, attempts: int = 3) -> dict:
+    """Retry transient empty reflow responses used by radio/special-layout rooms."""
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return await get_douyin_reflow_room_data(room_id, sec_uid, proxy_addr, cookies)
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                await asyncio.sleep(0.35 * (attempt + 1))
+    raise RuntimeError(f'Douyin reflow retry exhausted: {last_error}') from last_error
+
+
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
@@ -107,7 +123,22 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
         headers['cookie'] = cookies
 
     try:
-        web_rid = url.split('?')[0].split('live.douyin.com/')[-1]
+        parsed_url = urllib.parse.urlparse(url)
+        web_rid = parsed_url.path.rstrip('/').rsplit('/', 1)[-1]
+        recorder_params = urllib.parse.parse_qs(parsed_url.query)
+        stored_room_id = str((recorder_params.get('lr_room_id') or [''])[0]).strip()
+        stored_sec_uid = str((recorder_params.get('lr_sec_user_id') or [''])[0]).strip()
+
+        # Radio and other special-layout rooms can deliberately return 404 for
+        # their PC page. Prefer the identity resolved from the anchor profile.
+        if stored_room_id and stored_sec_uid:
+            try:
+                return await get_douyin_reflow_room_data_with_retry(
+                    stored_room_id, stored_sec_uid, proxy_addr, cookies
+                )
+            except Exception:
+                # A room id can rotate; retain the PC endpoint as a fallback.
+                pass
         params = {
             "aid": "6383",
             "app_name": "douyin_web",
@@ -143,7 +174,9 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                 sec_uid = str(user.get('sec_uid') or '')
                 if not room_id or not sec_uid:
                     raise RuntimeError('Douyin PC entry returned no room data or reflow identity')
-                room_data = await get_douyin_reflow_room_data(room_id, sec_uid, proxy_addr, cookies)
+                room_data = await get_douyin_reflow_room_data_with_retry(
+                    room_id, sec_uid, proxy_addr, cookies
+                )
         except Exception as e:
             raise Exception(f"Douyin web data fetch error, because {e}.")
 
