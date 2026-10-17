@@ -23,6 +23,7 @@ import random
 import uuid
 from pathlib import Path
 import urllib.request
+import urllib.parse
 from urllib.error import URLError, HTTPError
 from typing import Any
 import configparser
@@ -2094,7 +2095,18 @@ while True:
 
                 if url_host in platform_host or any(ext in url for ext in (".flv", ".m3u8")):
                     if url_host in clean_url_host_list:
-                        url = update_file(url_config_file, old_str=url, new_str=url.split('?')[0])
+                        clean_url = url.split('?')[0]
+                        if url_host == "live.douyin.com":
+                            parsed_url = urllib.parse.urlparse(url)
+                            query = urllib.parse.parse_qs(parsed_url.query)
+                            recorder_identity = {
+                                key: query[key][0]
+                                for key in ("lr_room_id", "lr_sec_user_id")
+                                if query.get(key) and query[key][0]
+                            }
+                            if recorder_identity:
+                                clean_url += "?" + urllib.parse.urlencode(recorder_identity)
+                        url = update_file(url_config_file, old_str=url, new_str=clean_url)
 
                     if 'xiaohongshu' in url:
                         host_id = re.search('&host_id=(.*?)(?=&|$)', url)
