@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from desktop_anchors import AnchorStore
 from desktop_baidupan import BaiduPanUploadManager
 from desktop_core import RecorderProcess, RoomStore, SettingsStore, normalize_recorder_anchor_name
-from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
+from desktop_media_library import MediaLibrary, RecentRecordingCache, group_recordings, media_audio_command, merge_recording_group, scan_recordings
 from desktop_integrity import MediaIntegrityStore
 from desktop_gifts import GiftLedger
 from desktop_tasks import RecordingTaskQueue
@@ -520,6 +520,48 @@ def make_handler(state: AppState, token: str):
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
 
+        def _serve_media_audio_preview(self) -> None:
+            media_path = Path(parse_qs(urlparse(self.path).query).get("path", [""])[0]).resolve()
+            output_root = state.output_path().resolve()
+            if output_root not in media_path.parents or not media_path.is_file():
+                raise ValueError("媒体文件不存在或不在录像目录中")
+            process = subprocess.Popen(
+                media_audio_command(media_path),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if not process.stdout:
+                process.terminate()
+                raise RuntimeError("无法读取录像音频")
+            first_chunk = process.stdout.read(4096)
+            if not first_chunk:
+                error = (process.stderr.read() if process.stderr else b"").decode("utf-8", errors="ignore")
+                process.wait(timeout=5)
+                raise RuntimeError(f"录像中没有可播放的音轨：{error[-300:]}")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                self.wfile.write(first_chunk)
+                while True:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+
         def do_GET(self) -> None:
             if not self._authorized():
                 self._json({"error": "未授权"}, HTTPStatus.FORBIDDEN)
@@ -603,6 +645,8 @@ def make_handler(state: AppState, token: str):
                     self._json({"library": library, "upload_reconciliation": reconciliation})
                 elif path == "/api/media/preview":
                     self._serve_media_preview()
+                elif path == "/api/media/audio-preview":
+                    self._serve_media_audio_preview()
                 elif path == "/api/anchors":
                     self._json({"anchors": state.anchors.list(), "duplicate_groups": state.anchors.duplicate_groups()})
                 else:

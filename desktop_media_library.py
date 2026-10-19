@@ -174,6 +174,18 @@ def merge_recording_group(group: dict, ffmpeg: str | None = None, minimum_age_se
         temporary_output.unlink(missing_ok=True)
 
 
+def media_audio_command(path: str | Path, ffmpeg: str | None = None) -> list[str]:
+    """Build a streaming command that exposes only a recording's audio track."""
+    executable = ffmpeg or shutil.which("ffmpeg")
+    if not executable:
+        raise RuntimeError("未找到 FFmpeg，无法播放录像音频")
+    return [
+        executable, "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", str(Path(path)), "-map", "0:a:0?", "-vn", "-sn", "-dn",
+        "-c:a", "libmp3lame", "-b:a", "160k", "-f", "mp3", "pipe:1",
+    ]
+
+
 def _kind(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in VIDEO_EXTENSIONS:

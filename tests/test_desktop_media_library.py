@@ -4,7 +4,7 @@ from pathlib import Path
 
 from unittest.mock import patch
 
-from desktop_media_library import RecentRecordingCache, group_recordings, merge_recording_group, scan_recordings
+from desktop_media_library import RecentRecordingCache, group_recordings, media_audio_command, merge_recording_group, scan_recordings
 
 
 class RecordingGroupsTest(unittest.TestCase):
@@ -80,6 +80,15 @@ class RecordingGroupsTest(unittest.TestCase):
                 (root / f"segment-{index:03d}.mp4").write_bytes(b"video")
 
             self.assertEqual(105, len(scan_recordings(root, limit=None)))
+
+    def test_audio_playback_transcodes_recording_without_video(self):
+        command = media_audio_command("/tmp/主播/录像.ts", ffmpeg="/fake/ffmpeg")
+
+        self.assertEqual("/fake/ffmpeg", command[0])
+        self.assertIn("/tmp/主播/录像.ts", command)
+        self.assertIn("0:a:0?", command)
+        self.assertIn("-vn", command)
+        self.assertEqual(["mp3", "pipe:1"], command[-2:])
 
 
 if __name__ == "__main__":
