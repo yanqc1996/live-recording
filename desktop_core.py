@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 import os
 import re
 import shutil
@@ -190,11 +191,16 @@ class RoomStore:
                 seen.add(url)
                 room_id = str(anchor.get("room_id") or "").strip()
                 sec_user_id = str(anchor.get("sec_user_id") or "").strip()
-                if "live.douyin.com/" in url and room_id and sec_user_id:
-                    url += "?" + urllib.parse.urlencode({
+                if "live.douyin.com/" in url and sec_user_id:
+                    identity = {
                         "lr_room_id": room_id,
                         "lr_sec_user_id": sec_user_id,
-                    })
+                    }
+                    if bool(anchor.get("anonymous_recording", False)):
+                        identity["lr_anonymous_recording"] = "1"
+                    url += "?" + urllib.parse.urlencode(identity)
+                elif "live.douyin.com/" in url and bool(anchor.get("anonymous_recording", False)):
+                    url += "?" + urllib.parse.urlencode({"lr_anonymous_recording": "1"})
                 name = str(anchor.get("name") or "未命名主播").strip().replace("\n", " ").replace(",", "，")
                 value = f"{url},主播: {name}"
                 entries.append(value if bool(anchor.get("enabled_recording", True)) else f"#{value}")
@@ -337,7 +343,86 @@ class RecorderProcess:
     def set_douyin_cookie(self, cookie: str) -> None:
         """Keep the browser session in memory and pass it only to the recorder child."""
         with self._lock:
-            self._douyin_cookie = cookie.strip()
+            value = cookie.strip()
+            if value == self._douyin_cookie:
+                return
+            if self.is_running:
+                self._send_control({"action": "auth", "cookie": value})
+                self._append_log("桌面控制台：登录状态已热更新，下次拉流使用新凭据")
+            self._douyin_cookie = value
+
+    def _send_control(self, command: dict) -> None:
+        with self._lock:
+            if not self.is_running or not self.process.stdin:
+                raise RuntimeError("录制服务未运行，无法发送重试指令")
+            try:
+                self.process.stdin.write(json.dumps(command, ensure_ascii=False) + "\n")
+                self.process.stdin.flush()
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("录制服务控制通道不可用，请重新启动录制服务") from exc
+
+    def retry_anchor(self, anchor: dict, reason: str = "手动立即重试") -> bool:
+        with self._lock:
+            key = anchor['id']
+            previous = self._room_states.get(key, {})
+            now = time.time()
+            # A manual retry must never interrupt a healthy capture.
+            if previous.get('state') == 'recording' and now - float(previous.get('last_file_growth_at') or 0) < self.recording_stale_threshold:
+                return False
+            if now - float(previous.get('last_retry_at') or 0) < 30:
+                return False
+            url = str(anchor.get('live_url') or '')
+            if not url:
+                raise ValueError("未获得直播间地址，暂时无法重试")
+            identity = {
+                key: str(anchor.get(key) or '').strip()
+                for key in ('room_id', 'sec_user_id')
+                if str(anchor.get(key) or '').strip()
+            }
+            if identity.get('sec_user_id'):
+                parsed = urllib.parse.urlparse(url)
+                query = urllib.parse.parse_qs(parsed.query)
+                query.update({f'lr_{key}': [value] for key, value in identity.items()})
+                url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+            if anchor.get('anonymous_recording', False):
+                parsed = urllib.parse.urlparse(url)
+                query = urllib.parse.parse_qs(parsed.query)
+                query['lr_anonymous_recording'] = ['1']
+                url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+            self._send_control({'action': 'retry', 'url': url})
+            self._transition_room(key, anchor['name'], 'reconnecting', last_retry_at=now,
+                                  retry_count=int(previous.get('retry_count') or 0) + 1,
+                                  error=reason + '，已唤醒该主播的录制检查')
+            self._append_log(f"桌面控制台：{anchor['name']} {reason}")
+            return True
+
+    def observe_anchor(self, anchor: dict) -> None:
+        """Independent profile evidence catches failures before engine logs 'live'."""
+        with self._lock:
+            if not self.is_running or not anchor.get('enabled_recording', True):
+                return
+            self._refresh_room_health()
+            key = anchor['id']
+            previous = self._room_states.get(key, {})
+            if anchor.get('last_live_status') != 'live':
+                previous.pop('profile_live_since', None)
+                return
+            since = previous.get('profile_live_since') or time.time()
+            previous['profile_checked_at'] = time.time()
+            if previous.get('state') not in {'recording', 'finalizing'}:
+                previous = self._transition_room(key, anchor['name'], 'live',
+                    live_detected_at=since, profile_live_since=since, profile_checked_at=time.time())
+            else:
+                previous['profile_live_since'] = since
+            self._refresh_room_health()
+            self._refresh_missed_recordings()
+            # A profile check is independent of the recorder engine's slower
+            # polling loop. Wake the room worker as soon as it confirms a live
+            # session; otherwise a room still marked "waiting" may not be
+            # checked by the engine for several minutes.
+            current_state = self._room_states.get(key, {}).get('state')
+            if current_state in {'live', 'missed', 'reconnecting'}:
+                self.retry_anchor(anchor, '检测到开播但未正常写入，自动恢复')
 
     @property
     def has_douyin_session(self) -> bool:
@@ -346,7 +431,8 @@ class RecorderProcess:
     def _append_log(self, line: str) -> None:
         line = line.rstrip()
         if line:
-            self._track_room_state(line)
+            with self._lock:
+                self._track_room_state(line)
             if self.logs.maxlen and len(self.logs) == self.logs.maxlen:
                 self._log_offset += 1
             self.logs.append(line)
@@ -376,6 +462,11 @@ class RecorderProcess:
             name = normalize_recorder_anchor_name(waiting.group("name"))
             key = self._room_state_keys.get(name) or ((self.resolve_anchor_id(name) if self.resolve_anchor_id else None) or name)
             self._room_state_keys[name] = key
+            previous = self._room_states.get(key, {})
+            if previous.get('profile_live_since') and time.time() - previous.get('profile_checked_at', 0) < 120:
+                self._transition_room(key, name, 'reconnecting',
+                    error='近期检测到开播，但录制接口返回未开播，正在重新核验', path='')
+                return
             self._transition_room(key, name, "waiting", offline_detected_at=time.time(), path="")
             return
         failed = re.search(r"(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制出错", line.strip())
@@ -407,7 +498,7 @@ class RecorderProcess:
 
     def _refresh_room_health(self) -> None:
         now = time.time()
-        for key, state in self._room_states.items():
+        for key, state in list(self._room_states.items()):
             if state.get("state") == "finalizing" and now - float(state.get("completed_at") or now) >= self.finalizing_display_seconds:
                 self._transition_room(key, str(state.get("name") or key), "waiting", path="")
                 continue
@@ -415,7 +506,7 @@ class RecorderProcess:
                 continue
             size = self._recording_size(str(state["path"]))
             if size is None:
-                continue
+                size = 0
             previous_size = int(state.get("last_file_size") or 0)
             if size > previous_size:
                 state.update({"last_file_size": size, "last_file_growth_at": now, "updated_at": now})
@@ -426,7 +517,7 @@ class RecorderProcess:
 
     def _refresh_missed_recordings(self) -> None:
         now = time.time()
-        for key, state in self._room_states.items():
+        for key, state in list(self._room_states.items()):
             detected_at = float(state.get("live_detected_at") or 0)
             if state.get("state") != "live" or not detected_at or now - detected_at < self.missed_recording_threshold:
                 continue
@@ -438,8 +529,9 @@ class RecorderProcess:
                 "suspected_at": now,
                 "reason": "检测到开播后未在规定时间内开始录制",
             }
-            self._missed_incidents.append(incident)
-            self._append_log(f"桌面控制台：疑似漏录：{incident['name']} 已开播但尚未开始写入录像")
+            if not any(item['anchor_id'] == incident['anchor_id'] and item['detected_at'] == detected_at for item in self._missed_incidents):
+                self._missed_incidents.append(incident)
+                self._append_log(f"桌面控制台：疑似漏录：{incident['name']} 已开播但尚未开始写入录像")
 
     def preflight(self) -> list[str]:
         missing = []
@@ -473,8 +565,11 @@ class RecorderProcess:
                 kwargs["start_new_session"] = True
             environment = os.environ.copy()
             environment["PYTHONUNBUFFERED"] = "1"
+            environment["LIVERECORDER_CONTROL_PIPE"] = "1"
             if self._douyin_cookie:
                 environment["LIVERECORDER_DOUYIN_COOKIE"] = self._douyin_cookie
+            else:
+                environment.pop("LIVERECORDER_DOUYIN_COOKIE", None)
             packaged_engine = os.environ.get("LIVERECORDER_ENGINE_EXECUTABLE", "").strip()
             command = [packaged_engine, "--engine"] if packaged_engine else [
                 sys.executable, "-u", str(self.project_root / "main.py")
@@ -482,6 +577,7 @@ class RecorderProcess:
             self.process = subprocess.Popen(
                 command,
                 cwd=self.project_root,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -558,6 +654,10 @@ class RecorderProcess:
         return self.process is not None and self.process.poll() is None
 
     def status(self) -> dict:
+        with self._lock:
+            return self._status_snapshot()
+
+    def _status_snapshot(self) -> dict:
         self._refresh_room_health()
         self._refresh_missed_recordings()
         return {

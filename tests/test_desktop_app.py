@@ -1,6 +1,39 @@
 import unittest
+import json
+import threading
+import urllib.request
+from http.server import ThreadingHTTPServer
 
-from desktop_app import AppState
+from desktop_app import AppState, make_handler
+from unittest.mock import Mock
+
+
+class AnchorPresenceTests(unittest.TestCase):
+    def test_presence_checks_disabled_anchors_without_starting_recording(self):
+        for running in (False, True):
+            with self.subTest(running=running):
+                state = AppState.__new__(AppState)
+                anchor = {"id": "disabled", "enabled_recording": False}
+                state.anchors = _Anchors(anchor)
+                state.rooms = Mock()
+                state.recorder = Mock(is_running=running)
+                state.resolve_anchor = Mock(return_value=(anchor, {"is_live": True}))
+                state.sync_recording_rooms = Mock()
+                result = state.check_anchors_live_status()
+                state.resolve_anchor.assert_called_once_with("disabled")
+                self.assertTrue(result["results"][0]["ok"])
+                state.recorder.observe_anchor.assert_not_called()
+
+    def test_presence_continues_to_feed_enabled_running_recorder(self):
+        state = AppState.__new__(AppState)
+        anchor = {"id": "enabled", "enabled_recording": True}
+        state.anchors = _Anchors(anchor)
+        state.rooms = Mock()
+        state.recorder = Mock(is_running=True)
+        state.resolve_anchor = Mock(return_value=(anchor, {"is_live": True}))
+        state.sync_recording_rooms = Mock()
+        state.check_anchors_live_status()
+        state.recorder.observe_anchor.assert_called_once_with(anchor)
 
 
 class _Uploads:
@@ -58,6 +91,16 @@ class _Interaction:
         return dict(self.result)
 
 
+class _SequencedInteraction:
+    def __init__(self, *results):
+        self.results = list(results)
+        self.values = []
+
+    def resolve_live_room(self, value):
+        self.values.append(value)
+        return dict(self.results.pop(0))
+
+
 class _Tasks:
     def __init__(self, state):
         self.state = state
@@ -101,6 +144,83 @@ class AppStateRecordingUploadTest(unittest.TestCase):
         self.assertEqual("incomplete", anchor["last_live_status"])
         self.assertIn("未获得直播间地址", anchor["last_check_error"])
 
+    def test_offline_refresh_does_not_replace_last_confirmed_live_room(self):
+        state = AppState.__new__(AppState)
+        state.anchors = _Anchors({
+            "id": "a1", "name": "主播", "profile_url": "https://www.douyin.com/user/sec-1",
+            "live_url": "https://live.douyin.com/930", "web_rid": "930", "room_id": "7698",
+            "sec_user_id": "sec-1", "platform_user_id": "789",
+        })
+        state.interaction = _Interaction({
+            "is_live": False, "room_url": "https://live.douyin.com/708",
+            "web_rid": "708", "room_id": "offline-room", "sec_anchor_id": "sec-1",
+        })
+
+        anchor, _ = state.resolve_anchor("a1")
+
+        self.assertEqual("offline", anchor["last_live_status"])
+        self.assertEqual("https://live.douyin.com/930", anchor["live_url"])
+        self.assertEqual("930", anchor["web_rid"])
+        self.assertEqual("7698", anchor["room_id"])
+
+    def test_offline_refresh_accepts_rotated_room_after_same_account_verification(self):
+        state = AppState.__new__(AppState)
+        state.anchors = _Anchors({
+            "id": "a1", "name": "在下旺旺雪饼", "profile_url": "https://www.douyin.com/user/sec-1",
+            "live_url": "https://live.douyin.com/310", "web_rid": "310", "room_id": "old-room",
+            "sec_user_id": "sec-1", "platform_user_id": "789",
+        })
+        state.interaction = _SequencedInteraction(
+            {
+                "input_type": "user_profile", "is_live": False, "nickname": "小婷winko",
+                "profile_url": "https://www.douyin.com/user/sec-1",
+                "room_url": "https://live.douyin.com/440", "web_rid": "440",
+                "sec_anchor_id": "sec-1", "anchor_id": "789",
+            },
+            {
+                "input_type": "live_room", "is_live": False,
+                "room_url": "https://live.douyin.com/440", "web_rid": "440", "room_id": "new-room",
+                "sec_anchor_id": "sec-1", "anchor_id": "789",
+            },
+        )
+
+        anchor, _ = state.resolve_anchor("a1")
+
+        self.assertEqual("小婷winko", anchor["name"])
+        self.assertEqual("https://live.douyin.com/440", anchor["live_url"])
+        self.assertEqual("440", anchor["web_rid"])
+        self.assertEqual("new-room", anchor["room_id"])
+        self.assertEqual([
+            "https://www.douyin.com/user/sec-1",
+            "https://live.douyin.com/440",
+        ], state.interaction.values)
+
+    def test_offline_rotated_room_from_different_account_is_rejected(self):
+        state = AppState.__new__(AppState)
+        state.anchors = _Anchors({
+            "id": "a1", "name": "主播", "profile_url": "https://www.douyin.com/user/sec-1",
+            "live_url": "https://live.douyin.com/310", "web_rid": "310", "room_id": "old-room",
+            "sec_user_id": "sec-1", "platform_user_id": "789",
+        })
+        state.interaction = _SequencedInteraction(
+            {
+                "input_type": "user_profile", "is_live": False,
+                "room_url": "https://live.douyin.com/440", "web_rid": "440",
+                "sec_anchor_id": "sec-1", "anchor_id": "789",
+            },
+            {
+                "input_type": "live_room", "is_live": False,
+                "room_url": "https://live.douyin.com/440", "web_rid": "440", "room_id": "other-room",
+                "sec_anchor_id": "sec-other", "anchor_id": "999",
+            },
+        )
+
+        anchor, _ = state.resolve_anchor("a1")
+
+        self.assertEqual("https://live.douyin.com/310", anchor["live_url"])
+        self.assertEqual("310", anchor["web_rid"])
+        self.assertEqual("old-room", anchor["room_id"])
+
     def test_concurrent_recordings_keep_separate_upload_candidates(self):
         state = AppState.__new__(AppState)
         state._recording_candidates = {}
@@ -116,6 +236,31 @@ class AppStateRecordingUploadTest(unittest.TestCase):
         state._on_recorder_log("序号2 主播乙 2026-10-09 15:01:00 直播录制完成")
 
         self.assertEqual([("/tmp/a.ts", "主播甲"), ("/tmp/b.ts", "主播乙")], state.uploads.items)
+
+
+class AnchorStatusRouteTest(unittest.TestCase):
+    def test_check_live_is_not_treated_as_anchor_id(self):
+        class State:
+            def check_anchors_live_status(self):
+                return {"checked_at": 123, "results": []}
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(State(), "test-token"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/api/anchors/check-live",
+                data=b"{}",
+                headers={"Content-Type": "application/json", "X-LiveRecorder-Token": "test-token"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.load(response)
+            self.assertEqual(123, payload["checked_at"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":

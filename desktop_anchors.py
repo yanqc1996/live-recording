@@ -134,6 +134,7 @@ class AnchorStore:
                 "default_quality": "原画",
                 "output_dir": "",
                 "enabled_recording": True,
+                "anonymous_recording": False,
                 "last_live_status": "unknown",
                 "last_resolved_at": None,
                 "created_at": now,
@@ -194,6 +195,7 @@ class AnchorStore:
                     "default_quality": "原画",
                     "output_dir": "",
                     "enabled_recording": bool(room.get("active", True)),
+                    "anonymous_recording": False,
                     "last_live_status": "unknown",
                     "last_resolved_at": None,
                     "created_at": now,
@@ -219,6 +221,7 @@ class AnchorStore:
             "default_quality",
             "output_dir",
             "enabled_recording",
+            "anonymous_recording",
             "last_live_status",
             "last_resolved_at",
             "last_check_error",
@@ -279,6 +282,7 @@ class AnchorStore:
                     if not primary.get(field) and duplicate.get(field):
                         primary[field] = duplicate[field]
                 primary["enabled_recording"] = bool(primary.get("enabled_recording", True) or duplicate.get("enabled_recording", True))
+                primary["anonymous_recording"] = bool(primary.get("anonymous_recording", False) or duplicate.get("anonymous_recording", False))
                 primary["created_at"] = min(primary.get("created_at") or time.time(), duplicate.get("created_at") or time.time())
             primary["aliases"] = aliases
             primary["updated_at"] = int(time.time())

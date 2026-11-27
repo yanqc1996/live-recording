@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { api } from '../api';
 import { Empty, PageGrid, Panel, StatusBadge, anchorLiveUrl, formatBytes } from '../components';
 import type { Anchor, AppState } from '../types';
+import { anchorStatus, sortedAnchors } from '../anchorStatus';
 
 export function DashboardPage({ state, refresh, notify, logs, detailed, setDetailed, clearLogs }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void; logs: string[]; detailed: boolean; setDetailed: (value: boolean) => void; clearLogs: () => void }) {
   const [room, setRoom] = useState('');
@@ -15,18 +16,29 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
   const addRoom = () => act(async () => { await api('/api/anchors', { name: '未命名主播', profile_url: room, live_url: room }); setRoom(''); }, '主播已加入数据集');
   const toggle = (item: Anchor, active: boolean) => act(() => api(`/api/anchors/${item.id}`, { enabled_recording: active }), active ? '已启用录制' : '已暂停录制');
   const remove = (item: Anchor) => { if (confirm(`确定从主播数据集中删除 ${item.name} 吗？`)) act(() => api(`/api/anchors/${item.id}`, undefined, 'DELETE'), '主播已删除'); };
+  const forceRecord = async (item: Anchor) => {
+    setBusy(true);
+    try {
+      const result = await api<{message: string}>(`/api/anchors/${item.id}/force-record`, {});
+      await refresh(); notify(result.message);
+    } catch (e) { notify((e as Error).message, true); }
+    finally { setBusy(false); }
+  };
   const checkReplay=async(item:Anchor,runtime:any)=>{setReplayBusy('check');try{const result=await api<any>('/api/replays/check',{anchor_id:item.id,since:runtime?.live_detected_at||runtime?.suspected_at||0});setReplayCandidates(result.candidates||[]);setReplayOpen(true);notify(result.candidates?.length?`找到 ${result.candidates.length} 个回放候选`:'未发现平台公开的直播回放');}catch(e){notify((e as Error).message,true)}finally{setReplayBusy('')}};
   const recordings = state.recording_groups || [];
   const roomStates = state.status?.room_states || {};
   const displayState = (anchor: Anchor) => {
+    const presence = anchorStatus(anchor, state);
+    if (presence.recording) return 'recording';
     if (!anchorLiveUrl(anchor)) return anchor.last_live_status === 'live' ? 'incomplete' : 'error';
     if (anchor.enabled_recording === false) return 'paused';
     const runtime = roomStates[anchor.id]?.state;
     if (runtime && ['recording','live','missed','reconnecting','finalizing','waiting'].includes(runtime)) return runtime;
-    if (running) return 'waiting';
+    if (presence.live) return 'live';
+    if (!presence.fresh) return 'unknown';
     return anchor.last_live_status || 'unknown';
   };
-  const activeCount = state.anchors.filter(anchor => ['live','recording','reconnecting','finalizing'].includes(displayState(anchor))).length;
+  const activeCount = state.anchors.filter(anchor => anchorStatus(anchor, state).live).length;
   const recordingCount = state.anchors.filter(anchor => displayState(anchor) === 'recording').length;
   const logEvent = (line: string) => {
     if (line.includes('准备开始录制')) return { type:'recording', label:'开始录制', color:'red', icon:<Video size={16}/> };
@@ -37,15 +49,30 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
   };
   return <PageGrid>
     {state.storage?.level&&state.storage.level!=='healthy'&&<div className="wideColumn"><Alert color={state.storage.level==='critical'?'red':'yellow'} title={state.storage.level==='critical'?'磁盘空间已达到停止阈值':'磁盘空间不足'} icon={<TriangleAlert size={18}/>}>录像磁盘剩余 {state.storage.free_gb} GB；预警阈值 {state.storage.warning_gb} GB，停止阈值 {state.storage.stop_gb} GB。{state.storage.level==='critical'?' 系统会安全停止录制，释放空间后可重新启动。':' 建议清理已归档录像。'}</Alert></div>}
-    <div className="wideColumn"><Panel title="录制总览" badge={<StatusBadge value={running ? recordingCount ? 'recording' : 'waiting' : 'stopped'} />} actions={<Group gap="xs"><Button size="xs" variant="subtle" leftSection={<Activity size={14}/>} onClick={()=>setLogsOpen(true)}>运行事件{logs.length ? ` · ${logs.length}` : ''}</Button><Button size="xs" leftSection={<Video size={15}/>} disabled={running || busy} loading={busy && !running} onClick={() => act(() => api('/api/start', { settings: state.settings }), '录制服务已启动')}>开始录制</Button><Button size="xs" color="red" variant="light" leftSection={<Square size={14}/>} disabled={!running || busy} loading={busy && running} onClick={() => act(() => api('/api/stop', {}), '录制已停止并保存')}>停止并保存</Button></Group>}>
+    <div className="wideColumn"><Panel title="录制总览" badge={<StatusBadge value={running ? recordingCount ? 'recording' : 'waiting' : 'stopped'} />} actions={<Button size="xs" variant="subtle" leftSection={<Activity size={14}/>} onClick={()=>setLogsOpen(true)}>运行事件{logs.length ? ` · ${logs.length}` : ''}</Button>}>
       <div className="overviewRow"><div><Text fw={800} size="lg">{state.status?.auto_recovery?.recovering?'录制服务正在自动恢复':running ? recordingCount ? `正在录制 ${recordingCount} 位主播` : '监控运行中，等待主播开播' : '录制服务未启动'}</Text><Text c="dimmed" size="sm">{state.status?.auto_recovery?.recovering?`进程异常退出，正在进行第 ${state.status.auto_recovery.restart_attempts} 次恢复`:running ? '系统会持续巡检已启用主播，检测到开播后自动录制。' : '启动后会在后台自动巡检，不需要保持窗口打开。'}</Text></div><div className="recordingSummary"><div><strong>{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length}</strong><span>监控主播</span></div><div className="live"><strong>{activeCount}</strong><span>当前开播</span></div><div className="recording"><strong>{recordingCount}</strong><span>正在录制</span></div></div></div>
     </Panel></div>
     <div className="column">
-      <Panel title="主播实时状态" badge={<Text c="dimmed" size="sm">每 4 秒刷新</Text>}>
-        <div className="list roomStatusList">{state.anchors.length ? state.anchors.map(item => { const runtime=roomStates[item.id]; const status=displayState(item); return <div className={`listRow roomStatus ${status}`} key={item.id}>
-          <Switch checked={item.enabled_recording !== false} disabled={running || busy || !anchorLiveUrl(item)} onChange={e => toggle(item, e.currentTarget.checked)} />
-          <div className="grow"><Group gap="xs"><span className="roomStateDot"/><Text fw={700}>{item.name}</Text><StatusBadge value={status} /></Group><Text size="xs" c={status==='missed'?'red':'dimmed'} truncate>{status==='reconnecting' ? runtime?.error || '直播流中断，正在自动重连' : status==='finalizing' ? '录制已结束，正在整理文件和创建归档任务' : runtime?.path ? `正在写入：${runtime.path}` : status === 'missed' ? '已检测到开播，但迟迟没有生成录像；系统仍会继续尝试' : status === 'waiting' ? '录制服务正在巡检，开播后会自动开始录制' : status === 'live' ? '已检测到开播，正在准备录制' : anchorLiveUrl(item) || '尚未解析直播间地址'}</Text>{runtime?.updated_at&&<Text size="xs" c="dimmed">状态更新：{new Date(runtime.updated_at*1000).toLocaleTimeString()}</Text>}</div>
-          {status==='missed'&&<Button size="compact-xs" variant="light" loading={replayBusy==='check'} onClick={()=>checkReplay(item,runtime)}>检查回放</Button>}<Tooltip label={running ? '录制期间不可删除' : '删除'}><ActionIcon variant="subtle" color="red" disabled={running} onClick={() => remove(item)}><Trash2 size={17} /></ActionIcon></Tooltip>
+      <Panel title="主播实时状态" badge={<Text c="dimmed" size="sm">录制与开播优先显示</Text>}>
+        <Text size="xs" c="dimmed" mb="sm">开播状态与录制状态分别显示；录制中断时会自动尝试恢复。</Text>
+        <div className="list roomStatusList">{state.anchors.length ? sortedAnchors(state).map(item => { const runtime=roomStates[item.id]; const status=displayState(item); const presence=anchorStatus(item,state); return <div className={`roomCard roomStatus ${status}`} key={item.id}>
+          <Group justify="space-between" wrap="nowrap" gap="sm">
+            <Group gap="sm" wrap="nowrap" className="roomCardIdentity"><span className="roomStateDot"/><Text fw={650} truncate>{item.name}</Text></Group>
+            <Badge variant="light" color={presence.recording?'red':presence.live?'green':'gray'}>{presence.label}</Badge>
+          </Group>
+          <Text size="xs" c="dimmed" mt={6}>{presence.checkedLabel} · {item.enabled_recording===false?'未加入自动录制':!running?'录制服务未启动':status==='recording'?'正在保存录像':status==='live'?'等待开始录制':'已加入自动录制'}</Text>
+          {['missed','reconnecting','finalizing'].includes(status) && <Text size="xs" c={status==='missed'?'red':'dimmed'} mt={6}>{status==='reconnecting'?runtime?.error||'直播流中断，正在自动重连':status==='finalizing'?'录制结束，正在整理录像':'已开播但尚未生成录像，正在重试'}</Text>}
+          <details className="roomCardDetails"><summary>录制操作与文件详情</summary>
+          {runtime?.path && presence.recording && <Text size="xs" c="dimmed" truncate title={runtime.path} mt={6}>正在写入：{runtime.path}</Text>}
+          <Group className="roomCardFooter" justify="space-between" gap="xs">
+            <Tooltip label={running?'调整自动录制名单前，请先停止全部录制':'启用后，启动服务即可自动监控'}><span><Switch size="xs" label="自动录制" checked={item.enabled_recording!==false} disabled={running||busy||!anchorLiveUrl(item)} onChange={e=>toggle(item,e.currentTarget.checked)}/></span></Tooltip>
+            <Group gap={4}>
+              {status==='missed'&&<Button size="compact-xs" variant="light" loading={replayBusy==='check'} onClick={()=>checkReplay(item,runtime)}>检查回放</Button>}
+              <Tooltip label={!running?'请先启动录制服务':item.enabled_recording===false?'请先加入自动录制':presence.recording?'正在正常录制':'重新检查该主播并尝试录制'}><Button size="compact-xs" variant="subtle" disabled={!running||busy||presence.recording||item.enabled_recording===false} onClick={()=>forceRecord(item)}>重试录制</Button></Tooltip>
+              {!running&&<Tooltip label="从主播库删除"><ActionIcon aria-label={`删除${item.name}`} variant="subtle" color="gray" disabled={busy} onClick={()=>remove(item)}><Trash2 size={15}/></ActionIcon></Tooltip>}
+            </Group>
+          </Group>
+          </details>
         </div>}) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
         <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址，加入统一主播库" leftSection={<Plus size={16} />} flex={1} /><Button disabled={!room.trim()} onClick={addRoom}>添加</Button></Group>
       </Panel>

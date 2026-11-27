@@ -1,15 +1,15 @@
 {
   "name": "live-recorder-desktop",
-  "version": "0.1.29",
+  "version": "0.1.32",
   "private": true,
   "description": "Local live recording workspace",
   "main": "electron/main.cjs",
   "scripts": {
     "ui:dev": "vite --config vite.config.ts",
     "ui:build": "tsc --noEmit && vite build --config vite.config.ts",
-    "desktop": "npm run ui:build && electron .",
+    "desktop": "node scripts/build_audio_monitor.cjs && npm run ui:build && electron .",
     "desktop:build-info": "node scripts/write_build_info.cjs",
-    "desktop:runtime": "npm run ui:build && npm run desktop:build-info && python3 scripts/build_desktop_runtime.py",
+    "desktop:runtime": "node scripts/build_audio_monitor.cjs && npm run ui:build && npm run desktop:build-info && python3 scripts/build_desktop_runtime.py",
     "desktop:pack": "npm run desktop:runtime && electron-builder --dir",
     "desktop:dist": "npm run desktop:runtime && electron-builder"
   },
@@ -27,6 +27,9 @@
     "appId": "com.boluzhushou.desktop",
     "productName": "Live Studio",
     "asar": true,
+    "asarUnpack": [
+      "electron/audio-route-monitor"
+    ],
     "files": [
       "electron/**/*",
       "package.json"

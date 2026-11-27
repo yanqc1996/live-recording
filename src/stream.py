@@ -54,6 +54,20 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
         m3u8_url_list = [url for url in (stream_url.get('hls_pull_url_map') or {}).values() if url]
         if stream_url.get('hls_pull_url'):
             m3u8_url_list.append(stream_url['hls_pull_url'])
+        # Reflow and page responses may contain SDK streams only.
+        sdk_data = (stream_url.get('live_core_sdk_data') or {}).get('pull_data') or {}
+        raw_sdk = sdk_data.get('stream_data')
+        if raw_sdk:
+            try:
+                sdk_streams = (json.loads(raw_sdk) if isinstance(raw_sdk, str) else raw_sdk).get('data') or {}
+                for value in sdk_streams.values():
+                    main = value.get('main') or {}
+                    if main.get('flv'):
+                        flv_url_list.append(main['flv'])
+                    if main.get('hls'):
+                        m3u8_url_list.append(main['hls'])
+            except (ValueError, TypeError, AttributeError):
+                pass
         if not flv_url_list and not m3u8_url_list:
             return result
 
@@ -67,11 +81,13 @@ async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr:
                 flv_url = flv_url_list[min(fallback_index, len(flv_url_list) - 1)]
         result |= {
             'is_live': True,
-            'title': json_data['title'],
+            'title': json_data.get('title', ''),
             'quality': video_quality,
             'm3u8_url': m3u8_url,
             'flv_url': flv_url,
             'record_url': m3u8_url or flv_url,
+            'source_candidates': list(dict.fromkeys(url for url in
+                [flv_url, m3u8_url, *flv_url_list, *m3u8_url_list] if url)),
         }
     return result
 

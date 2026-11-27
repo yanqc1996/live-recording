@@ -1,5 +1,6 @@
 import gzip
 import unittest
+from urllib.parse import urlparse, parse_qs
 from unittest.mock import AsyncMock, patch
 
 from desktop_douyin import (
@@ -9,6 +10,7 @@ from desktop_douyin import (
     LiveRoomInfo,
     _audio_relay_command,
     _decode_live_response,
+    _refresh_saved_live_room_info,
     extract_douyin_share_url,
     fetch_live_room_info,
     resolve_live_room,
@@ -299,6 +301,22 @@ class DouyinAnonymousAccessTest(unittest.TestCase):
         self.assertEqual("anonymous", result["access_mode"])
         fetch_rank.assert_called_once()
 
+    @patch("desktop_douyin.fetch_gift_rank")
+    def test_empty_anonymous_gift_rank_retries_with_connected_account(self, fetch_rank):
+        fetch_rank.side_effect = [
+            {"ranks": [], "raw_message": ""},
+            {"ranks": [{"user": {"id": "u1"}, "contribution": "30"}], "raw_message": ""},
+        ]
+        manager = DouyinInteractionManager()
+        manager.set_auth("sessionid_ss=login-token", anonymous_live_access=True)
+
+        result = manager.gift_rank("https://live.douyin.com/123")
+
+        self.assertEqual("authenticated", result["access_mode"])
+        self.assertEqual(2, fetch_rank.call_count)
+        self.assertFalse(fetch_rank.call_args_list[0].args[0].connected)
+        self.assertTrue(fetch_rank.call_args_list[1].args[0].connected)
+
 
 class DouyinLiveResponseDecoderTest(unittest.TestCase):
     @staticmethod
@@ -338,6 +356,80 @@ class DouyinLiveResponseDecoderTest(unittest.TestCase):
 
 
 class DouyinLiveSessionTest(unittest.TestCase):
+    @patch("src.spider.get_douyin_reflow_room_data_with_retry", new_callable=AsyncMock)
+    def test_saved_identity_is_refreshed_to_current_live_session(self, reflow):
+        reflow.return_value = {
+            "id_str": "current-room",
+            "web_rid": "73210920013",
+            "status": 2,
+            "title": "当前直播",
+            "owner": {
+                "id_str": "anchor-id",
+                "sec_uid": "MS4wLjAB-sec-user",
+            },
+        }
+        auth = DouyinAuthState.from_cookie("ttwid=public-token")
+
+        info = _refresh_saved_live_room_info(
+            auth,
+            "https://live.douyin.com/73210920013",
+            {
+                "room_id": "stale-room",
+                "web_rid": "73210920013",
+                "sec_user_id": "MS4wLjAB-sec-user",
+            },
+        )
+
+        self.assertEqual("current-room", info.room_id)
+        self.assertEqual("anchor-id", info.anchor_id)
+        reflow.assert_awaited_once_with(
+            "stale-room", "MS4wLjAB-sec-user", cookies=auth.cookie_str
+        )
+
+    @patch("desktop_douyin.WebSocketApp")
+    @patch("desktop_douyin._live_signature", return_value="signature")
+    @patch("desktop_douyin.fetch_initial_live_response", side_effect=ValueError("bootstrap unavailable"))
+    @patch("desktop_douyin._refresh_saved_live_room_info")
+    @patch("desktop_douyin.fetch_live_room_info", side_effect=RuntimeError("live page is unavailable"))
+    def test_radio_room_uses_saved_anchor_identity_when_page_parse_fails(
+        self, _fetch_room_info, refresh_room_info, _fetch_initial, _signature, websocket_app
+    ):
+        events = []
+        auth = DouyinAuthState.from_cookie("")
+        refresh_room_info.return_value = LiveRoomInfo(
+            web_rid="73210920013",
+            room_id="7697135735631104768",
+            user_id=auth.cookie["xgplayer_user_id"],
+            title="叫我小榕",
+            status="2",
+            anchor_id="7493456082678105146",
+            sec_anchor_id="MS4wLjAB-sec-user",
+        )
+        session = DouyinLiveSession(
+            "https://live.douyin.com/73210920013",
+            auth,
+            events.append,
+            room_identity={
+                "name": "叫我小榕",
+                "web_rid": "73210920013",
+                "room_id": "7697135735631104768",
+                "platform_user_id": "7493456082678105146",
+                "sec_user_id": "MS4wLjAB-sec-user",
+            },
+        )
+
+        session.start()
+
+        self.assertEqual("7697135735631104768", session.info.room_id)
+        self.assertEqual("7493456082678105146", session.info.anchor_id)
+        self.assertTrue(any("通过主播身份解析当前场次" in event["message"] for event in events))
+        websocket_url = websocket_app.call_args.kwargs["url"]
+        self.assertEqual(
+            "7697135735631104768",
+            parse_qs(urlparse(websocket_url).query)["room_id"][0],
+        )
+        websocket_app.return_value.run_forever.assert_called_once()
+
     @patch("desktop_douyin.WebSocketApp")
     @patch("desktop_douyin._live_signature", return_value="signature")
     @patch("desktop_douyin.fetch_initial_live_response", side_effect=ValueError("corrupt protobuf"))

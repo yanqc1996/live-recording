@@ -35,7 +35,6 @@ class GiftLedger:
         self._seen: set[str] = set()
         self._combos: dict[str, tuple[int, float]] = {}
         self._rank_snapshots: dict[str, dict[str, int]] = {}
-        self._websocket_gift_sessions: set[str] = set()
 
     def _load(self) -> dict:
         try:
@@ -60,7 +59,7 @@ class GiftLedger:
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.path)
 
-    def begin(self, anchor: dict, room_url: str, activate: bool = True) -> dict:
+    def begin(self, anchor: dict, room_url: str) -> dict:
         with self._lock:
             now = time.time()
             context = {
@@ -70,10 +69,9 @@ class GiftLedger:
                 "room_url": room_url,
                 "started_at": now,
             }
-            if activate:
-                self._context = context
-                self._seen.clear()
-                self._combos.clear()
+            self._context = context
+            self._seen.clear()
+            self._combos.clear()
             return dict(context)
 
     def end(self) -> None:
@@ -93,7 +91,6 @@ class GiftLedger:
             active_context = context or self._context
             if not active_context:
                 return None
-            self._websocket_gift_sessions.add(str(active_context.get("session_id") or ""))
             message_id = str(event.get("message_id") or "")
             if message_id and message_id in self._seen:
                 return None
@@ -188,16 +185,37 @@ class GiftLedger:
             return diagnostics[-1] if diagnostics else None
 
     def _record_rank_snapshot(self, event: dict, context: dict | None = None) -> dict | None:
-        """Persist contribution-rank deltas when anonymous WebSocket omits gift messages."""
+        """Use contribution totals to fill gaps left by WebSocket gift messages.
+
+        Rank values are cumulative per user.  Compare each value with everything
+        already persisted for that user in the session, including both concrete
+        gifts and earlier rank corrections.  This keeps the rank poller useful
+        after the first WebSocket gift without counting the same contribution
+        twice.
+        """
         with self._lock:
             active_context = context or self._context
             session_id = str(active_context.get("session_id") or "") if active_context else ""
-            if not active_context or not session_id or session_id in self._websocket_gift_sessions:
+            if not active_context or not session_id:
                 return None
             ranks = event.get("ranks") if isinstance(event.get("ranks"), list) else []
-            previous = self._rank_snapshots.get(session_id, {})
             current: dict[str, int] = {}
             data = self._load()
+            counted_by_user: dict[str, int] = {}
+            for item in data["events"]:
+                if str(item.get("session_id") or "") != session_id:
+                    continue
+                recorded_user = item.get("user") if isinstance(item.get("user"), dict) else {}
+                recorded_user_id = str(
+                    recorded_user.get("id")
+                    or recorded_user.get("sec_uid")
+                    or recorded_user.get("nickname")
+                    or "anonymous"
+                )
+                counted_by_user[recorded_user_id] = (
+                    counted_by_user.get(recorded_user_id, 0)
+                    + max(0, int(item.get("sound_wave") or 0))
+                )
             added = 0
             now = float(event.get("time") or time.time())
             for rank in ranks:
@@ -205,7 +223,7 @@ class GiftLedger:
                 user_id = str(user.get("id") or user.get("sec_uid") or user.get("nickname") or "anonymous")
                 contribution = max(0, int(rank.get("contribution") or 0))
                 current[user_id] = contribution
-                delta = max(0, contribution - int(previous.get(user_id) or 0))
+                delta = max(0, contribution - counted_by_user.get(user_id, 0))
                 if not delta:
                     continue
                 data["events"].append({
@@ -215,6 +233,7 @@ class GiftLedger:
                     "value_source": "rank", "rank_snapshot": True,
                     "user": {"id": str(user.get("id") or ""), "nickname": str(user.get("nickname") or "匿名用户"), "display_id": str(user.get("display_id") or "")},
                 })
+                counted_by_user[user_id] = counted_by_user.get(user_id, 0) + delta
                 added += delta
             self._rank_snapshots[session_id] = current
             if added:

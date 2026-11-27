@@ -119,6 +119,28 @@ def _gift_wire_metadata(payload: bytes) -> dict:
         return {}
 
 
+def _light_gift_wire_metadata(payload: bytes) -> dict:
+    """Decode the distinct compact layout used by WebcastLightGiftMessage.
+
+    Light gifts do not use GiftMessage's combo/user/gift fields.  In
+    particular, field 5 is the sender id rather than a repeat count; treating
+    it as a combo causes every real light-gift event to be rejected as an
+    implausibly large quantity.
+    """
+    try:
+        fields = _protobuf_wire_fields(payload)
+        gift_payload = next((value for value in fields.get(7, []) if isinstance(value, bytes)), b"")
+        gift_fields = _protobuf_wire_fields(gift_payload) if gift_payload else {}
+        return {
+            "gift_id": str(next(iter(gift_fields.get(1, [])), "") or ""),
+            "diamond_count": int(next(iter(gift_fields.get(3, [])), 0) or 0),
+            "count": int(next(iter(fields.get(10, [])), 0) or 0),
+            "user_id": str(next(iter(fields.get(5, [])), "") or ""),
+        }
+    except (TypeError, ValueError, IndexError):
+        return {}
+
+
 def _gift_combo_count(*values: object) -> int | None:
     """Choose a plausible combo count and reject schema-mismatched identifiers."""
     candidates = []
@@ -661,6 +683,101 @@ def fetch_live_room_info(auth: DouyinAuthState, room_url: str) -> LiveRoomInfo:
     raise RuntimeError("无法解析直播间信息，可能未开播、链接不正确或触发了抖音风控")
 
 
+def _warm_live_room_cookies(auth: DouyinAuthState, web_rid: str) -> None:
+    """Refresh public live-page cookies before opening an anonymous websocket.
+
+    Douyin may set the required public cookies on an intermediate redirect.
+    A one-shot ``requests.get`` only exposes the final response's cookies, so
+    preserve the full redirect cookie jar and carry it into the websocket
+    handshake. This is especially important when room metadata falls back to a
+    saved/reflow identity because the page itself did not parse successfully.
+    """
+    url = f"{DOUYIN_LIVE_ORIGIN}/{web_rid}"
+    headers = {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "cache-control": "no-cache",
+        "referer": f"{DOUYIN_LIVE_ORIGIN}/?from_nav=1",
+        "user-agent": UA,
+    }
+    with requests.Session() as session:
+        session.cookies.update(auth.cookie)
+        response = session.get(url, headers=headers, timeout=15, verify=False, allow_redirects=True)
+        auth.update_cookies(session.cookies.get_dict())
+        auth.update_cookies(response.cookies.get_dict())
+
+
+def _saved_live_room_info(
+    auth: DouyinAuthState, room_url: str, identity: dict | None
+) -> LiveRoomInfo | None:
+    """Build minimum websocket identity from a saved creator record.
+
+    Some audio/radio rooms intentionally have no usable desktop live page, but
+    the saved room ID and web RID can still be used to attempt a websocket
+    connection.
+    """
+    identity = identity or {}
+    room_id = str(identity.get("room_id") or "").strip()
+    web_rid = str(identity.get("web_rid") or "").strip()
+    if not web_rid:
+        try:
+            web_rid = _room_web_rid(room_url)
+        except ValueError:
+            return None
+    if not room_id or not web_rid:
+        return None
+    return LiveRoomInfo(
+        web_rid=web_rid,
+        room_id=room_id,
+        user_id=str(auth.cookie.get("xgplayer_user_id") or ""),
+        title=str(identity.get("name") or ""),
+        # Keep this distinct from a verified live status: cached identity only
+        # enables a connection attempt and does not prove the room is live now.
+        status="cached",
+        anchor_id=str(identity.get("platform_user_id") or ""),
+        sec_anchor_id=str(identity.get("sec_user_id") or ""),
+    )
+
+
+def _refresh_saved_live_room_info(
+    auth: DouyinAuthState, room_url: str, identity: dict | None
+) -> LiveRoomInfo | None:
+    """Resolve the current live session for rooms whose desktop page is unavailable.
+
+    ``room_id`` identifies a live *session*, not permanently an anchor.  Keeping
+    the cached value is enough to complete a websocket handshake, but a socket
+    opened for an old session never receives chat messages.  The mobile reflow
+    endpoint accepts the saved anchor identity and returns the current session.
+    """
+    cached = _saved_live_room_info(auth, room_url, identity)
+    identity = identity or {}
+    sec_user_id = str(identity.get("sec_user_id") or "").strip()
+    if cached is None or not sec_user_id:
+        return cached
+
+    from src import spider
+
+    data = asyncio.run(
+        spider.get_douyin_reflow_room_data_with_retry(
+            cached.room_id, sec_user_id, cookies=auth.cookie_str
+        )
+    )
+    current_room_id = str(data.get("id_str") or data.get("room_id") or data.get("id") or "").strip()
+    if not current_room_id:
+        raise RuntimeError("抖音移动端接口未返回当前直播场次 ID")
+    owner = data.get("owner") or {}
+    return LiveRoomInfo(
+        web_rid=str(data.get("web_rid") or owner.get("web_rid") or cached.web_rid),
+        room_id=current_room_id,
+        user_id=cached.user_id,
+        title=str(data.get("title") or cached.title),
+        status=str(data.get("status") or "cached"),
+        anchor_id=str(owner.get("id_str") or owner.get("id") or cached.anchor_id),
+        sec_anchor_id=str(owner.get("sec_uid") or cached.sec_anchor_id),
+        ttwid=cached.ttwid,
+    )
+
+
 def fetch_initial_live_response(auth: DouyinAuthState, info: LiveRoomInfo) -> Live_pb2.LiveResponse:
     params = {
         "resp_content_type": "protobuf",
@@ -825,8 +942,13 @@ def _normalize_rank_entry(entry: dict, fallback_rank: int) -> dict:
     }
 
 
-def fetch_gift_rank(auth: DouyinAuthState, room_url: str) -> dict:
-    info = fetch_live_room_info(auth, room_url)
+def fetch_gift_rank(auth: DouyinAuthState, room_url: str, room_identity: dict | None = None) -> dict:
+    try:
+        info = fetch_live_room_info(auth, room_url)
+    except Exception as page_error:
+        info = _saved_live_room_info(auth, room_url, room_identity)
+        if info is None:
+            raise page_error
     params = {
         "aid": "6383",
         "app_name": "douyin_web",
@@ -979,17 +1101,48 @@ def resolve_live_room(auth: DouyinAuthState, value: str) -> dict:
 
 
 class DouyinLiveSession:
-    def __init__(self, room_url: str, auth: DouyinAuthState, on_event: Callable[[dict], None]):
+    def __init__(
+        self,
+        room_url: str,
+        auth: DouyinAuthState,
+        on_event: Callable[[dict], None],
+        room_identity: dict | None = None,
+    ):
         self.room_url = room_url
         self.auth = auth
         self.on_event = on_event
+        self.room_identity = dict(room_identity or {})
         self.info: LiveRoomInfo | None = None
         self.ws: WebSocketApp | None = None
         self._closed = threading.Event()
         self.method_counts: dict[str, int] = {}
 
     def start(self) -> None:
-        self.info = fetch_live_room_info(self.auth, self.room_url)
+        try:
+            self.info = fetch_live_room_info(self.auth, self.room_url)
+        except Exception as page_error:
+            try:
+                self.info = _refresh_saved_live_room_info(self.auth, self.room_url, self.room_identity)
+            except Exception as refresh_error:
+                self.info = _saved_live_room_info(self.auth, self.room_url, self.room_identity)
+                if self.info is not None:
+                    self.on_event({
+                        "type": "system",
+                        "message": f"当前场次刷新失败，将尝试缓存 ID：{refresh_error}",
+                    })
+            if self.info is None:
+                raise page_error
+            self.on_event({
+                "type": "system",
+                "message": "直播网页信息不可用，已通过主播身份解析当前场次，正在连接弹幕…",
+            })
+        try:
+            _warm_live_room_cookies(self.auth, self.info.web_rid)
+        except Exception as cookie_error:
+            self.on_event({
+                "type": "system",
+                "message": f"匿名直播间会话刷新失败，继续尝试连接弹幕：{cookie_error}",
+            })
         try:
             initial = fetch_initial_live_response(self.auth, self.info)
         except Exception:
@@ -1057,7 +1210,11 @@ class DouyinLiveSession:
             self.ws.close()
 
     def _on_open(self, ws) -> None:
-        self.on_event({"type": "system", "message": "弹幕监听已连接", "room": self.info.__dict__ if self.info else {}})
+        self.on_event({
+            "type": "system",
+            "message": "弹幕服务已连接，正在等待直播间消息…",
+            "room": self.info.__dict__ if self.info else {},
+        })
         threading.Thread(target=self._ping, args=(ws,), daemon=True).start()
 
     def _ping(self, ws) -> None:
@@ -1101,6 +1258,44 @@ class DouyinLiveSession:
             msg = Live_pb2.MemberMessage()
             msg.ParseFromString(item.payload)
             self.on_event({"type": "member", "user": _user_to_dict(msg.user), "content": "进入直播间"})
+        elif method == "WebcastLightGiftMessage":
+            wire = _light_gift_wire_metadata(item.payload)
+            gift_id = str(wire.get("gift_id") or "")
+            count = _gift_combo_count(wire.get("count"))
+            shape = _protobuf_wire_shape(item.payload, nested_fields=(7,))
+            fingerprint = hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+            schema_event = {
+                "type": "gift_schema",
+                "source_method": method,
+                "message_id": str(getattr(item, "msgId", "") or ""),
+                "schema_fingerprint": fingerprint,
+                "schema": shape,
+                "accepted": bool(gift_id and count is not None),
+                "gift_name_resolved": False,
+                "user_resolved": bool(wire.get("user_id")),
+            }
+            if not gift_id or count is None:
+                self.on_event(schema_event)
+                self.on_event({
+                    "type": "error",
+                    "message": "收到无法识别的轻礼物消息，已忽略以防止错误计数",
+                    "source_method": method,
+                })
+                return
+            gift_name = f"轻礼物 #{gift_id}"
+            self.on_event({
+                "type": "gift",
+                "user": {"id": str(wire.get("user_id") or ""), "nickname": "匿名用户"},
+                "message_id": str(getattr(item, "msgId", "") or ""),
+                "gift_id": gift_id,
+                "gift_name": gift_name,
+                "combo_count": count,
+                "repeat_end": True,
+                "diamond_count": int(wire.get("diamond_count") or 0),
+                "content": f"送出 {gift_name} x {count}",
+                "source_method": method,
+            })
+            self.on_event(schema_event)
         elif "GiftMessage" in method:
             msg = Live_pb2.GiftMessage()
             msg.ParseFromString(item.payload)
@@ -1166,6 +1361,7 @@ class DouyinInteractionManager:
         self._events: deque[dict] = deque(maxlen=1500)
         self._offset = 0
         self._room_url = ""
+        self._room_identity: dict = {}
         self._audio_process: subprocess.Popen[bytes] | None = None
         self._audio_source_url = ""
         self._audio_stream_id = ""
@@ -1234,7 +1430,7 @@ class DouyinInteractionManager:
             start = max(0, cursor - self._offset)
             return {"cursor": self._offset + len(self._events), "events": list(self._events)[start:]}
 
-    def start_listening(self, room_url: str) -> dict:
+    def start_listening(self, room_url: str, room_identity: dict | None = None) -> dict:
         room_url = room_url.strip()
         if not room_url:
             raise ValueError("请先选择直播间")
@@ -1244,7 +1440,10 @@ class DouyinInteractionManager:
         live_auth = self._live_auth()
         with self._lock:
             self._room_url = room_url
-            self._session = DouyinLiveSession(self._room_url, live_auth, self._append)
+            self._room_identity = dict(room_identity or {})
+            self._session = DouyinLiveSession(
+                self._room_url, live_auth, self._append, room_identity=self._room_identity
+            )
             self._thread = threading.Thread(target=self._run_session, daemon=True)
             self._thread.start()
         mode = "登录增强模式" if live_auth.connected else "匿名模式"
@@ -1257,7 +1456,13 @@ class DouyinInteractionManager:
     def _poll_gift_rank(self) -> None:
         while not self._rank_stop.is_set():
             try:
-                result = fetch_gift_rank(self._live_auth(), self._room_url)
+                result = fetch_gift_rank(self._live_auth(), self._room_url, self._room_identity)
+                # Anonymous live access is deliberately the default for stable
+                # chat, but Douyin may omit the contribution list anonymously.
+                # Reuse an already connected local account only for this
+                # read-only fallback rather than silently losing gift totals.
+                if not result.get("ranks") and self._anonymous_live_access and self._auth.connected:
+                    result = fetch_gift_rank(self._auth, self._room_url, self._room_identity)
                 self._rank_error = str(result.get("raw_message") or "")
                 if result.get("ranks"):
                     self._append({"type": "gift_rank_snapshot", "ranks": result["ranks"], "updated_at": result.get("updated_at")})
@@ -1308,23 +1513,27 @@ class DouyinInteractionManager:
             "live_id": "1",
             "device_platform": "web",
             "language": "zh-CN",
-            "enter_from": "web_others_homepage",
+            "enter_from": "link_share",
             "cookie_enabled": "true",
             "screen_width": "2560",
             "screen_height": "1440",
             "browser_language": "zh-CN",
             "browser_platform": "Win32",
-            "browser_name": "Edge",
-            "browser_version": "130.0.0.0",
+            "browser_name": "Chrome",
+            "browser_version": "138.0.0.0",
             "room_id": info.room_id,
             "content": content,
             "type": "0",
             "msToken": _ms_token(self._auth.cookie),
         }
         params["a_bogus"] = _a_bogus(params)
+        # The signature covers the exact percent-encoded query string.  Passing
+        # ``params=`` lets the HTTP client serialize it again and can change
+        # bytes inside msToken/browser fields, yielding HTTP 200 with no body.
+        signed_url = f"{DOUYIN_LIVE_ORIGIN}{api}?{urllib.parse.urlencode(params)}"
         headers = {
             "accept": "application/json, text/plain, */*",
-            "origin": DOUYIN_WEB_ORIGIN,
+            "origin": DOUYIN_LIVE_ORIGIN,
             "referer": f"{DOUYIN_LIVE_ORIGIN}/{info.web_rid}",
             "user-agent": UA,
             "x-secsdk-csrf-token": _csrf_token(self._auth.cookie_str),
@@ -1335,16 +1544,28 @@ class DouyinInteractionManager:
             "bd-ticket-guard-web-version": "1",
         }
         response = requests.get(
-            f"{DOUYIN_LIVE_ORIGIN}{api}",
+            signed_url,
             headers=headers,
-            params=params,
             cookies=self._auth.cookie,
             timeout=15,
             verify=False,
         )
-        result = response.json()
+        response.raise_for_status()
+        if not response.text.strip():
+            raise RuntimeError("抖音返回了空响应，发送凭证或浏览器指纹已失效")
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise RuntimeError("抖音返回了无法识别的发送结果") from exc
+        status_code = result.get("status_code", result.get("statusCode", 0))
+        if status_code not in (None, 0, "0"):
+            message = (
+                result.get("status_msg") or result.get("status_message") or
+                result.get("message") or f"抖音接口返回错误 {status_code}"
+            )
+            raise RuntimeError(str(message))
         self._append({"type": "self", "content": content, "result": result})
-        return {"ok": True, "result": result}
+        return {"ok": True, "confirmed": "api-accepted", "result": result}
 
     def audio_source(self, room_url: str, quality: str = "原画") -> dict:
         from src import spider, stream
@@ -1470,6 +1691,9 @@ class DouyinInteractionManager:
         live_auth = self._live_auth()
         try:
             result = fetch_gift_rank(live_auth, room_url)
+            if not result.get("ranks") and self._anonymous_live_access and self._auth.connected:
+                result = fetch_gift_rank(self._auth, room_url)
+                live_auth = self._auth
         except Exception as exc:
             suffix = "；匿名访问可能受到抖音限制，可切换登录增强后重试" if not live_auth.connected else ""
             raise RuntimeError(f"无法获取礼物贡献榜：{exc}{suffix}") from exc

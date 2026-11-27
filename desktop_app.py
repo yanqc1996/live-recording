@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,7 @@ from desktop_gifts import GiftLedger
 from desktop_tasks import RecordingTaskQueue
 from desktop_update import UpdateManager
 from desktop_work_pull import WorkPullManager
+from desktop_transcription import TranscriptionManager
 
 
 BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -89,8 +91,8 @@ class LazyDouyinInteraction:
     def events(self, cursor: int = 0) -> dict:
         return {"cursor": 0, "events": []} if self._manager is None else self._manager.events(cursor)
 
-    def start_listening(self, room_url: str) -> dict:
-        return self._load().start_listening(room_url)
+    def start_listening(self, room_url: str, room_identity: dict | None = None) -> dict:
+        return self._load().start_listening(room_url, room_identity=room_identity)
 
     def stop_listening(self) -> dict:
         return self.status() if self._manager is None else self._manager.stop_listening()
@@ -130,11 +132,12 @@ class AppState:
         self.sync_recording_rooms()
         self.settings = SettingsStore(PROJECT_ROOT / "config" / "config.ini")
         self.updates = UpdateManager(PROJECT_ROOT / "config" / "update.json", APP_VERSION, BUILD_COMMIT)
-        self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self._recording_candidates: dict[str, dict] = {}
         self._recordings = RecentRecordingCache()
         self.integrity = MediaIntegrityStore(PROJECT_ROOT / "config" / "media_integrity.json")
         self.recorder = RecorderProcess(PROJECT_ROOT, on_log=self._on_recorder_log, resolve_anchor_id=self.anchors.find_id_by_name)
+        self._anchor_refresh_lock = threading.Lock()
+        self._anchor_refresh_started = False
         self.gifts = GiftLedger(PROJECT_ROOT / "config" / "gift_ledger.json")
         self.interaction = LazyDouyinInteraction(on_event=self.gifts.record)
         self.work_pull = WorkPullManager(PROJECT_ROOT / "douyin_work_pull" / "state.json", self.output_path())
@@ -143,9 +146,20 @@ class AppState:
         self._replay_candidates: dict[str, dict] = {}
         self._gift_monitors: dict[str, object] = {}
         self._gift_monitor_lock = threading.RLock()
+        self.transcriptions = TranscriptionManager(PROJECT_ROOT / 'transcriptions', self.output_path,
+            lambda: [str(s.get('path')) for s in self.recorder.status().get('room_states', {}).values()
+                     if s.get('path') and s.get('state') in {'recording', 'reconnecting'}])
+        self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT, before_upload=self._transcribe_before_upload)
         self.recording_tasks = RecordingTaskQueue(
-            PROJECT_ROOT / "config" / "recording_tasks.json", self._process_recording_task
-        )
+            PROJECT_ROOT / 'config' / 'recording_tasks.json', self._process_recording_task)
+
+    def _transcribe_before_upload(self, item, cancelled):
+        from scripts.upload_to_baidu_netdisk import resolve_upload_files
+        paths = resolve_upload_files(item['save_file_path'], item.get('save_type', 'TS'),
+            bool(item.get('split_video_by_time')), bool(item.get('converts_to_mp4')), int(item.get('wait_timeout') or 900))
+        if not paths:
+            raise ValueError('上传前未找到可转写的视频，已停止上传')
+        self.transcriptions.archive_before_upload(paths, str(item.get('record_name') or ''), cancelled)
 
     def sync_recording_rooms(self) -> list[dict]:
         return self.rooms.sync_from_anchors(self.anchors.list())
@@ -180,14 +194,65 @@ class AppState:
         )
         value = str(stable_profile or anchor.get("profile_url") or anchor.get("live_url") or "").strip()
         live_room = self.interaction.resolve_live_room(value)
+        verified_offline_identity = False
+        candidate_live_url = str(live_room.get("room_url") or "").strip()
+        candidate_web_rid = str(live_room.get("web_rid") or "").strip()
+        identity_rotated = bool(
+            candidate_live_url
+            and (
+                candidate_live_url != str(anchor.get("live_url") or "").strip()
+                or candidate_web_rid != str(anchor.get("web_rid") or "").strip()
+                or not anchor.get("room_id")
+            )
+        )
+        # Profile responses may expose a newly rotated web RID while offline, but
+        # that value alone can also be a placeholder.  Resolve the candidate as a
+        # live-room URL and only accept it when Douyin returns a concrete room id
+        # belonging to the same stable account.  This prevents a stale saved room
+        # id from poisoning the recorder's reflow fallback after the next launch.
+        if not live_room.get("is_live") and identity_rotated:
+            try:
+                candidate = self.interaction.resolve_live_room(candidate_live_url)
+                same_sec_uid = bool(
+                    anchor.get("sec_user_id")
+                    and candidate.get("sec_anchor_id") == anchor.get("sec_user_id")
+                )
+                same_platform_id = bool(
+                    anchor.get("platform_user_id")
+                    and str(candidate.get("anchor_id") or "") == str(anchor.get("platform_user_id") or "")
+                )
+                verified_offline_identity = bool(
+                    candidate.get("input_type") == "live_room"
+                    and candidate.get("room_id")
+                    and (same_sec_uid or same_platform_id)
+                )
+                if verified_offline_identity:
+                    profile_fields = {
+                        key: live_room.get(key)
+                        for key in ("nickname", "profile_url", "source_url")
+                        if live_room.get(key)
+                    }
+                    live_room = {**live_room, **candidate, **profile_fields}
+            except Exception:
+                # Keep the last confirmed live identity when verification is
+                # unavailable; the normal refresh loop will try again later.
+                pass
         status, error = self._resolution_status(live_room)
+        confirmed_live = bool(live_room.get("is_live"))
+        resolved_live_url = str(live_room.get("room_url") or "").strip()
+        resolved_web_rid = str(live_room.get("web_rid") or "").strip()
+        resolved_room_id = str(live_room.get("room_id") or "").strip()
         updates = {
             "profile_url": live_room.get("profile_url") or live_room.get("source_url") or anchor.get("profile_url", ""),
             "platform_user_id": live_room.get("anchor_id", "") or anchor.get("platform_user_id", ""),
             "sec_user_id": live_room.get("sec_anchor_id", "") or anchor.get("sec_user_id", ""),
-            "live_url": live_room.get("room_url") or anchor.get("live_url", ""),
-            "web_rid": live_room.get("web_rid", "") or anchor.get("web_rid", ""),
-            "room_id": live_room.get("room_id", "") or anchor.get("room_id", ""),
+            # An offline profile response can contain a stable placeholder web RID
+            # that is not the creator's most recent live room. Never let that
+            # overwrite a previously confirmed room; the next confirmed live
+            # response will rotate all three identifiers together.
+            "live_url": resolved_live_url if resolved_live_url and (confirmed_live or verified_offline_identity or not anchor.get("live_url")) else anchor.get("live_url", ""),
+            "web_rid": resolved_web_rid if resolved_web_rid and (confirmed_live or verified_offline_identity or not anchor.get("web_rid")) else anchor.get("web_rid", ""),
+            "room_id": resolved_room_id if resolved_room_id and (confirmed_live or verified_offline_identity or not anchor.get("room_id")) else anchor.get("room_id", ""),
             "last_live_status": status,
             "last_resolved_at": int(time.time()),
             "last_check_error": error,
@@ -223,28 +288,33 @@ class AppState:
                 "record_name": record_name,
                 "save_file_path": candidate_match.group("path").strip(),
                 "created_at": time.time(),
+                "settings": dict(self.settings.load()),
             }
             threading.Thread(target=self._start_gift_monitor, args=(record_name,), daemon=True, name=f"gift-monitor-{record_name}").start()
             return
-        if "直播录制完成" not in line:
+        if line.startswith('桌面控制台：录制服务已退出'):
+            for name in list(self._recording_candidates):
+                self._enqueue_recording_finalization(name)
             return
-        completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+直播录制完成", line.strip())
+        if not any(marker in line for marker in ('直播录制完成', '直播录制出错', '录制文件已关闭')):
+            return
+        completed_match = re.search(r"^(?P<name>.+?)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+(?:直播录制完成|直播录制出错|录制文件已关闭)", line.strip())
         completed_name = normalize_recorder_anchor_name(completed_match.group("name")) if completed_match else ""
+        if completed_name:
+            self._enqueue_recording_finalization(completed_name)
+
+    def _enqueue_recording_finalization(self, completed_name: str) -> None:
         self._stop_gift_monitor(completed_name)
-        config = self.uploads.load_config()
-        if not (config.get("enabled") and config.get("auto_upload")):
+        candidate = self._recording_candidates.get(completed_name)
+        if not candidate:
             return
-        candidate = self._recording_candidates.pop(completed_name, None)
-        if not candidate and self._recording_candidates:
-            candidate = max(self._recording_candidates.values(), key=lambda item: float(item.get("created_at") or 0))
-        if not candidate or time.time() - float(candidate.get("created_at") or 0) > 24 * 3600:
-            return
-        settings = self.settings.load()
+        settings = candidate.get('settings') or self.settings.load()
         self.recording_tasks.enqueue(
             "finalize_recording",
             {"candidate": candidate, "settings": settings},
             dedupe_key=str(candidate.get("save_file_path") or ""),
         )
+        self._recording_candidates.pop(completed_name, None)
         self.recorder._append_log(f"桌面控制台：已创建可恢复的录像整理任务：{completed_name}")
 
     def _process_recording_task(self, task: dict) -> None:
@@ -260,16 +330,19 @@ class AppState:
             integrity = self.integrity.inspect(str(candidate.get("save_file_path") or ""))
             if integrity.get("status") == "failed":
                 raise RuntimeError(f"录像完整性检查失败：{integrity.get('error')}")
-            self.uploads.enqueue_recording(
-                str(candidate.get("save_file_path") or ""),
-                record_name=str(candidate.get("record_name") or ""),
-                save_type=str(settings.get("format") or ""),
-                split_video_by_time=bool(settings.get("split_enabled")),
-                converts_to_mp4=bool(settings.get("convert_to_mp4")),
-                source="recording",
-            )
+            config = self.uploads.load_config()
+            if config.get('enabled') and config.get('auto_upload'):
+                self.uploads.enqueue_recording(
+                    str(candidate.get("save_file_path") or ""),
+                    record_name=str(candidate.get("record_name") or ""),
+                    save_type=str(settings.get("format") or ""),
+                    split_video_by_time=False,
+                    converts_to_mp4=bool(settings.get("convert_to_mp4")),
+                    source="recording",
+                )
+            self.recorder._append_log(f"桌面控制台：本地录像整理完成：{candidate.get('save_file_path')}")
         except Exception as exc:
-            self.recorder._append_log(f"桌面控制台：录制完成后加入百度网盘上传队列失败：{exc}")
+            self.recorder._append_log(f"桌面控制台：录像整理失败，将由任务队列重试：{exc}")
             raise
 
     def _start_gift_monitor(self, record_name: str) -> None:
@@ -285,11 +358,6 @@ class AppState:
                 if anchor_id in self._gift_monitors:
                     return
                 context = self.gifts.begin(anchor, room_url)
-                interaction = self.interaction.status()
-                if interaction.get("listening") and str(interaction.get("room_url") or "").rstrip("/") == room_url.rstrip("/"):
-                    self._gift_monitors[anchor_id] = "shared"
-                    self.recorder._append_log(f"桌面控制台：{record_name} 礼物统计复用当前直播监听连接")
-                    return
                 from desktop_douyin import DouyinInteractionManager
                 manager = DouyinInteractionManager(on_event=lambda event, ctx=context: self.gifts.record(event, ctx))
                 self._gift_monitors[anchor_id] = manager
@@ -324,8 +392,7 @@ class AppState:
                 pass
 
     def _merge_and_enqueue_completed_recording(self, candidate: dict, settings: dict) -> None:
-        """Merge a completed split session before creating its sole upload task."""
-        time.sleep(1)
+        """Finalize only this closed recording batch; uploading is optional."""
         record_name = str(candidate.get("record_name") or "")
         candidate_path = Path(str(candidate.get("save_file_path") or ""))
         candidate_base = re.sub(r"_(?:%0?3d|\d{3,})$", "", candidate_path.stem)
@@ -337,42 +404,42 @@ class AppState:
             )), None)
             if not group:
                 group = next((item for item in groups if (
-                    Path(str(item.get("id") or "")).name == candidate_base
-                    or (
-                        str(item.get("anchor") or "") == record_name
-                        and item.get("segment_count", 0) > 1
-                        and float(item.get("latest_modified") or 0) >= float(candidate.get("created_at") or 0)
-                    )
+                    Path(str(item.get("id") or "")).resolve() == (candidate_path.parent / candidate_base).resolve()
                 )), None)
+            if not group:
+                raise RuntimeError('未找到该批次录像文件，保留整理任务等待重试')
+            config = self.uploads.load_config()
+            auto_upload = bool(config.get('enabled') and config.get('auto_upload'))
             if group and int(group.get("segment_count") or 0) > 1:
                 merged = group.get("merged_file") or merge_recording_group(group, minimum_age_seconds=0)
                 integrity = self.integrity.inspect(str(merged.get("path") or ""))
                 if integrity.get("status") == "failed":
                     raise RuntimeError(f"完整文件校验失败：{integrity.get('error')}")
-                self.uploads.replace_segments_with_merged(
-                    str(merged.get("path") or ""),
-                    [str(item.get("path") or "") for item in group.get("segments") or []],
-                    record_name=record_name,
-                )
+                if auto_upload:
+                    self.uploads.replace_segments_with_merged(
+                        str(merged.get("path") or ""),
+                        [str(item.get("path") or "") for item in group.get("segments") or []],
+                        record_name=record_name,
+                    )
                 self._recordings.invalidate()
-                self.recorder._append_log(f"桌面控制台：分段已合并并加入上传队列：{merged.get('path')}")
+                self.recorder._append_log(f"桌面控制台：分段本地合并完成{'，已加入上传队列' if auto_upload else ''}：{merged.get('path')}")
                 return
-            self.uploads.enqueue_recording(
-                str(candidate_path), record_name=record_name,
-                save_type=str(settings.get("format") or ""), split_video_by_time=True,
-                converts_to_mp4=bool(settings.get("convert_to_mp4")), source="recording",
-            )
-        except Exception as exc:
-            self.recorder._append_log(f"桌面控制台：分段自动合并失败，将按原分段上传：{exc}")
-            try:
+            segments = group.get('segments') or []
+            for segment in segments:
+                integrity = self.integrity.inspect(str(segment.get('path') or ''))
+                if integrity.get('status') == 'failed':
+                    raise RuntimeError(f"录像完整性检查失败：{integrity.get('error')}")
+            if auto_upload:
                 self.uploads.enqueue_recording(
                     str(candidate_path), record_name=record_name,
                     save_type=str(settings.get("format") or ""), split_video_by_time=True,
-                    converts_to_mp4=bool(settings.get("convert_to_mp4")), source="recording-fallback",
+                    converts_to_mp4=bool(settings.get("convert_to_mp4")), source="recording",
                 )
-            except Exception as upload_exc:
-                self.recorder._append_log(f"桌面控制台：原分段加入上传队列失败：{upload_exc}")
-                raise
+            self._recordings.invalidate()
+            self.recorder._append_log(f"桌面控制台：本地录像整理完成，无需合并：{candidate_path.name}")
+        except Exception as exc:
+            self.recorder._append_log(f"桌面控制台：分段整理失败，原文件已保留，任务将重试：{exc}")
+            raise
 
     def media_library(self) -> dict:
         library = MediaLibrary(self.output_path()).scan()
@@ -388,23 +455,78 @@ class AppState:
                 )
         return library
 
-    def check_anchors_live_status(self) -> dict:
+    def force_record_anchor(self, anchor_id: str) -> dict:
+        if not self.recorder.is_running:
+            raise RuntimeError("请先启动录制服务，再对单个主播立即重试")
+        if self.storage_status().get('level') == 'critical':
+            raise RuntimeError("磁盘空间已达到停止阈值，请释放空间后重试")
+        anchor = self.anchors.get(anchor_id)
+        resolution_error = ''
+        try:
+            anchor, _ = self.resolve_anchor(anchor_id)
+        except Exception:
+            resolution_error = '主页解析失败，使用已保存的房间信息重试'
+        if not anchor.get('live_url'):
+            raise ValueError("暂无可用直播间地址，请先补全主播信息")
+        anchor = self.anchors.update(anchor_id, {'enabled_recording': True})
+        self.sync_recording_rooms()
+        sent = self.recorder.retry_anchor(anchor, '手动强制检查录制')
+        return {'requested': sent, 'message': resolution_error or (
+            '已请求立即检查并录制；若主播未开播，将继续监控' if sent else '该主播正在正常录制，或已在重试冷却期内')}
+
+    def check_anchors_live_status(self, enabled_only: bool = False) -> dict:
         results = []
-        for anchor in self.anchors.list():
+        def check(anchor):
             anchor_id = anchor.get("id", "")
             live_room = None
             try:
                 updated, live_room = self.resolve_anchor(anchor_id)
-                results.append({"anchor": updated, "live_room": live_room, "ok": True})
+                return {"anchor": updated, "live_room": live_room, "ok": True}
             except Exception as exc:
                 updates = {"last_resolved_at": int(time.time()), "last_live_status": "error", "last_check_error": str(exc)}
                 try:
                     updated = self.anchors.update(anchor_id, updates)
                 except Exception:
                     updated = anchor
-                results.append({"anchor": updated, "live_room": None, "ok": False, "error": str(exc)})
+                return {"anchor": updated, "live_room": None, "ok": False, "error": str(exc)}
+        anchors = [anchor for anchor in self.anchors.list()
+                   if not enabled_only or anchor.get('enabled_recording', True)]
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix='anchor-check') as pool:
+            for future in as_completed([pool.submit(check, anchor) for anchor in anchors]):
+                item = future.result()
+                results.append(item)
+                if item['ok'] and self.recorder.is_running and item['anchor'].get('enabled_recording', True):
+                    self.sync_recording_rooms()
+                    self.recorder.observe_anchor(item['anchor'])
         self.sync_recording_rooms()
         return {"results": results, "anchors": self.anchors.list(), "rooms": self.rooms.list(), "checked_at": int(time.time())}
+
+    def start_anchor_refresh(self, initial_delay: float = 8, interval: float = 30) -> None:
+        """Continuously refresh rotating Douyin room identities in the background."""
+        with self._anchor_refresh_lock:
+            if self._anchor_refresh_started:
+                return
+            self._anchor_refresh_started = True
+
+        def refresh_loop() -> None:
+            time.sleep(max(0, initial_delay))
+            while True:
+                try:
+                    self.storage_status(enforce=True)
+                    result = self.check_anchors_live_status()
+                    live_count = sum(
+                        1 for item in result.get("results", [])
+                        if item.get("ok") and (item.get("live_room") or {}).get("is_live")
+                    )
+                    if live_count:
+                        self.recorder._append_log(
+                            f"桌面控制台：主播房间信息已自动刷新，检测到 {live_count} 个直播中"
+                        )
+                except Exception as exc:
+                    self.recorder._append_log(f"桌面控制台：主播房间自动刷新失败：{exc}")
+                time.sleep(max(30, interval))
+
+        threading.Thread(target=refresh_loop, name="anchor-live-refresh", daemon=True).start()
 
     def recordings(self, force: bool = False) -> list[dict]:
         settings = self.settings.load()
@@ -521,12 +643,20 @@ def make_handler(state: AppState, token: str):
                     remaining -= len(chunk)
 
         def _serve_media_audio_preview(self) -> None:
-            media_path = Path(parse_qs(urlparse(self.path).query).get("path", [""])[0]).resolve()
+            query = parse_qs(urlparse(self.path).query)
+            media_path = Path(query.get("path", [""])[0]).resolve()
             output_root = state.output_path().resolve()
             if output_root not in media_path.parents or not media_path.is_file():
                 raise ValueError("媒体文件不存在或不在录像目录中")
+            start = float(query.get('start', ['0'])[0])
+            if not 0 <= start <= 7 * 24 * 3600:
+                raise ValueError('音频播放时间无效')
+            command = media_audio_command(media_path)
+            if start:
+                position = command.index('-i')
+                command[position:position] = ['-ss', str(start)]
             process = subprocess.Popen(
-                media_audio_command(media_path),
+                command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -635,13 +765,21 @@ def make_handler(state: AppState, token: str):
                 elif path == "/api/baidupan/logs":
                     cursor = int(parse_qs(urlparse(self.path).query).get("cursor", ["0"])[0])
                     self._json(state.uploads.logs_snapshot(cursor))
+                elif path == '/api/transcriptions/search':
+                    query = parse_qs(urlparse(self.path).query)
+                    self._json(state.transcriptions.search(**{key: query.get(key, [''])[0] for key in ('creator', 'date', 'query')}))
+                elif path == '/api/transcriptions':
+                    identity = parse_qs(urlparse(self.path).query).get('id', [''])[0]
+                    self._json(self.transcription_result(state, identity))
                 elif path == "/api/media-library":
                     library = state.media_library()
                     reconciliation = state.uploads.reconcile_files(state.recording_archive_groups())
                     statuses = {item["path"]: item["status"] for item in reconciliation["files"]}
+                    archive_details = {item["path"]: item for item in reconciliation["files"]}
                     for anchor in library.get("anchors", []):
                         for item in anchor.get("files", []):
                             item["upload_status"] = statuses.get(item["path"], "untracked") if item.get("source") == "recording" else "not_applicable"
+                            item["archive_detail"] = archive_details.get(item["path"], {})
                     self._json({"library": library, "upload_reconciliation": reconciliation})
                 elif path == "/api/media/preview":
                     self._serve_media_preview()
@@ -661,6 +799,18 @@ def make_handler(state: AppState, token: str):
             path, parts = self._route()
             try:
                 body = self._body()
+                if path == '/api/transcriptions/model':
+                    self._json(state.transcriptions.install_model())
+                    return
+                if path == '/api/transcriptions/start':
+                    self._json({'job': state.transcriptions.start(str(body.get('path') or ''), str(body.get('language') or 'zh'))})
+                    return
+                if path == '/api/transcriptions/cancel':
+                    self._json({'job': state.transcriptions.cancel(str(body.get('id') or ''))})
+                    return
+                if path == '/api/recording-tasks/retry':
+                    self._json({'task': state.recording_tasks.retry(str(body.get('task_id') or ''))})
+                    return
                 if path == "/api/rooms":
                     state.rooms.add(body.get("value", ""))
                     self._json({"rooms": state.rooms.list()}, HTTPStatus.CREATED)
@@ -720,11 +870,16 @@ def make_handler(state: AppState, token: str):
                             "web_rid": item.get("web_rid", ""), "room_id": item.get("room_id", ""),
                             "default_quality": item.get("default_quality", "原画"), "output_dir": item.get("output_dir", ""),
                             "enabled_recording": bool(item.get("enabled_recording", True)),
+                            "anonymous_recording": bool(item.get("anonymous_recording", False)),
                         })
                     state.sync_recording_rooms()
                     self._json({"anchors": state.anchors.list(), "rooms": state.rooms.list()})
+                elif path == "/api/anchors/check-live":
+                    # Keep collection actions before the generic /api/anchors/{id}
+                    # route, otherwise "check-live" is treated as an anchor id.
+                    self._json(state.check_anchors_live_status())
                 elif len(parts) == 3 and parts[:2] == ["api", "anchors"]:
-                    editable = ("name", "profile_url", "platform_user_id", "sec_user_id", "live_url", "web_rid", "room_id", "default_quality", "output_dir", "enabled_recording")
+                    editable = ("name", "profile_url", "platform_user_id", "sec_user_id", "live_url", "web_rid", "room_id", "default_quality", "output_dir", "enabled_recording", "anonymous_recording")
                     anchor = state.anchors.update(parts[2], {key: body[key] for key in editable if key in body})
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
@@ -733,6 +888,8 @@ def make_handler(state: AppState, token: str):
                     anchor, live_room = state.resolve_anchor(anchor_id)
                     state.sync_recording_rooms()
                     self._json({"anchor": anchor, "live_room": live_room, "anchors": state.anchors.list(), "rooms": state.rooms.list()})
+                elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "force-record":
+                    self._json(state.force_record_anchor(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "anchors"] and parts[3] == "use-recording":
                     anchor_id = parts[2]
                     anchor = next((item for item in state.anchors.list() if item.get("id") == anchor_id), None)
@@ -766,8 +923,6 @@ def make_handler(state: AppState, token: str):
                     rooms = state.sync_recording_rooms()
                     room = next((item for item in rooms if live_url in item.get("value", "")), None)
                     self._json({"anchor": anchor, "room": room, "rooms": state.rooms.list(), "live_room": live_room})
-                elif path == "/api/anchors/check-live":
-                    self._json(state.check_anchors_live_status())
                 elif path == "/api/rooms/bulk":
                     if state.recorder.is_running:
                         raise RuntimeError("录制期间不可批量修改主播集合，请先停止并保存")
@@ -833,6 +988,7 @@ def make_handler(state: AppState, token: str):
                         raise ValueError("请至少启用一个直播间")
                     state.settings.save(body.get("settings", {}))
                     state.recorder.start()
+                    state.start_anchor_refresh()
                     self._json({"status": state.recorder.status()})
                 elif path == "/api/stop":
                     state.recorder.stop()
@@ -906,6 +1062,7 @@ def make_handler(state: AppState, token: str):
                         bool(body.get("anonymous_live_access", True)),
                     )
                     state.work_pull.set_auth(str(body.get("cookie", "")))
+                    state.start_anchor_refresh()
                     self._json({"connected": state.recorder.has_douyin_session})
                 elif path == "/api/auth/live-access":
                     state.interaction.set_live_access_mode(bool(body.get("anonymous", True)))
@@ -914,7 +1071,14 @@ def make_handler(state: AppState, token: str):
                     anchor = state.anchors.get(str(body["anchor_id"])) if body.get("anchor_id") else {"id": "", "name": "临时直播间"}
                     room_url = state.anchor_live_url(str(body["anchor_id"])) if body.get("anchor_id") else str(body.get("room_url", ""))
                     state.gifts.begin(anchor, room_url)
-                    self._json({"interaction": state.interaction.start_listening(room_url)})
+                    room_identity = {
+                        key: anchor.get(key, "")
+                        for key in ("name", "web_rid", "room_id", "platform_user_id", "sec_user_id")
+                    }
+                    room_identity["id"] = anchor.get("id", "")
+                    self._json({"interaction": state.interaction.start_listening(
+                        room_url, room_identity=room_identity
+                    )})
                 elif path == "/api/interaction/stop":
                     state.gifts.end()
                     self._json({"interaction": state.interaction.stop_listening()})
@@ -966,6 +1130,10 @@ def make_handler(state: AppState, token: str):
                     self._json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+        @staticmethod
+        def transcription_result(state, identity):
+            return {'result': state.transcriptions.result(identity)} if identity else state.transcriptions.status()
 
         def do_DELETE(self) -> None:
             if not self._authorized():
@@ -1025,6 +1193,7 @@ def main() -> None:
         state.interaction.stop_listening()
         state.stop_all_gift_monitors()
         state.recording_tasks.stop()
+        state.transcriptions.stop()
         server.server_close()
 
 

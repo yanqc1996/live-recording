@@ -107,6 +107,20 @@ class RecordingTaskQueue:
             except Exception as exc:
                 self._finish(str(task["id"]), exc)
 
+    def retry(self, task_id: str) -> dict:
+        with self._lock:
+            tasks = self._load()
+            task = next((item for item in tasks if item['id'] == task_id), None)
+            if not task:
+                raise ValueError('整理任务不存在')
+            if task.get('status') != 'failed':
+                raise ValueError('只能重试失败的整理任务')
+            task.update(status='pending', attempts=0, error='', next_attempt_at=0, updated_at=time.time())
+            self._save(tasks)
+            result = dict(task)
+        self._wake.set()
+        return result
+
     def status(self) -> dict:
         with self._lock:
             tasks = sorted(self._load(), key=lambda item: item.get("created_at", 0), reverse=True)

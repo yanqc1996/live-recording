@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, screen, session, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, screen, session, shell, Tray } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,7 +12,11 @@ app.setPath('userData', path.join(app.getPath('appData'), '播录助手'));
 app.setName('Live Studio');
 
 let mainWindow = null;
+let miniWindow = null;
 let loginWindow = null;
+let senderWindow = null;
+let senderQueue = Promise.resolve();
+let lastDouyinChatSentAt = 0;
 let backend = null;
 let backendUrl = '';
 let backendToken = '';
@@ -215,6 +219,13 @@ function validateMainSender(event) {
   if (url.hostname !== '127.0.0.1') throw new Error('Invalid IPC origin');
 }
 
+function validateAppSender(event) {
+  const trusted = [mainWindow, miniWindow].some((window) => window && !window.isDestroyed() && event.sender.id === window.webContents.id);
+  if (!trusted) throw new Error('Invalid IPC sender');
+  const url = new URL(event.senderFrame.url);
+  if (url.hostname !== '127.0.0.1') throw new Error('Invalid IPC origin');
+}
+
 function sourceRoot() {
   return path.join(__dirname, '..');
 }
@@ -374,6 +385,62 @@ async function openCompactWindow() {
   mainWindow.webContents.send('window:compact-mode-requested', true);
 }
 
+function miniBounds(saved = {}) {
+  const width = 336;
+  const height = 58;
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  return {
+    x: Number.isFinite(saved.x) ? Math.max(area.x, Math.min(saved.x, area.x + area.width - width)) : area.x + area.width - width - 18,
+    y: Number.isFinite(saved.y) ? Math.max(area.y, Math.min(saved.y, area.y + area.height - height)) : area.y + 18,
+    width,
+    height
+  };
+}
+
+async function openMiniWindow() {
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    miniWindow.show();
+    miniWindow.focus();
+    return;
+  }
+  miniWindow = new BrowserWindow({
+    ...miniBounds(loadWindowState().mini || {}),
+    minWidth: 336,
+    maxWidth: 336,
+    minHeight: 58,
+    maxHeight: 540,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    hasShadow: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: false
+    }
+  });
+  miniWindow.setAlwaysOnTop(true, 'floating');
+  miniWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  miniWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  miniWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== `${backendUrl}&mini=1`) event.preventDefault();
+  });
+  miniWindow.on('moved', () => {
+    if (!miniWindow || miniWindow.isDestroyed()) return;
+    const { x, y } = miniWindow.getBounds();
+    saveWindowState({ mini: { x, y } });
+  });
+  miniWindow.on('closed', () => { miniWindow = null; });
+  await miniWindow.loadURL(`${backendUrl}&mini=1`);
+  miniWindow.show();
+}
+
 function trayIcon() {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><rect x="2" y="3" width="14" height="12" rx="3" fill="black"/><path d="M7 6.2v5.6l4.7-2.8z" fill="white"/><circle cx="14.4" cy="4" r="2.1" fill="black" stroke="white" stroke-width="1"/></svg>';
   const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
@@ -410,7 +477,7 @@ function rebuildTrayMenu() {
         }
       }
     },
-    { label: 'Open Mini Controls', click: () => openCompactWindow().catch((error) => dialog.showErrorBox('Unable to open mini controls', error.message)) },
+    { label: 'Open Floating Controls', click: () => openMiniWindow().catch((error) => dialog.showErrorBox('Unable to open floating controls', error.message)) },
     { label: 'Open Live Studio', click: showMainWindow },
     { label: 'Hide Window', enabled: Boolean(mainWindow?.isVisible()), click: hideMainWindow },
     { type: 'separator' },
@@ -543,6 +610,111 @@ async function refreshDouyinSecurity(roomUrl = '') {
   };
 }
 
+function createHiddenSenderWindow() {
+  if (senderWindow && !senderWindow.isDestroyed()) return senderWindow;
+  senderWindow = new BrowserWindow({
+    width: 960,
+    height: 720,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      partition: DOUYIN_PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: false
+    }
+  });
+  senderWindow.webContents.setAudioMuted(true);
+  senderWindow.webContents.on('will-navigate', (event, url) => {
+    if (!allowedDouyinUrl(url)) event.preventDefault();
+  });
+  senderWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  senderWindow.on('closed', () => { senderWindow = null; });
+  return senderWindow;
+}
+
+async function sendDouyinChatHidden(roomUrl, rawContent) {
+  if (!allowedDouyinUrl(roomUrl) || !/^https:\/\/live\.douyin\.com\//.test(roomUrl)) {
+    throw new Error('请选择有效的抖音直播间');
+  }
+  const content = String(rawContent || '').trim();
+  if (!content) throw new Error('弹幕内容不能为空');
+  if (Array.from(content).length > 200) throw new Error('弹幕内容不能超过 200 个字符');
+  if (!hasLoginCookie(await douyinCookies())) throw new Error('请先同步已登录的抖音 Cookie');
+
+  const window = createHiddenSenderWindow();
+  if (window.webContents.getURL().split('?', 1)[0].replace(/\/$/, '') !== roomUrl.split('?', 1)[0].replace(/\/$/, '')) {
+    await window.loadURL(roomUrl);
+  }
+  // Douyin's live chat uses a Slate editor.  Synthetic DOM input events are
+  // frequently ignored by Slate, so focus it in the page and send native
+  // keyboard events through Electron instead.
+  const chatInputSelector = '[data-e2e="live-chatting"] [data-slate-editor="true"][contenteditable="true"]';
+  const fallbackSelectors = [
+    'textarea[placeholder*="说点"]',
+    'textarea[placeholder*="聊"]',
+    '[contenteditable="true"][data-placeholder*="说点"]',
+    '[contenteditable="true"][data-e2e*="chat"]',
+    '[class*="chatroom"] [contenteditable="true"]'
+  ];
+  const selectors = JSON.stringify([chatInputSelector, ...fallbackSelectors]);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const result = await window.webContents.executeJavaScript(`
+      (() => {
+        const visible = element => {
+          const rect = element?.getBoundingClientRect?.();
+          const style = element ? getComputedStyle(element) : null;
+          return Boolean(rect && rect.width > 0 && rect.height > 0 && style?.visibility !== 'hidden' && style?.display !== 'none');
+        };
+        const input = ${selectors}.flatMap(selector => Array.from(document.querySelectorAll(selector))).find(visible);
+        if (!input) {
+          const body = document.body?.innerText || '';
+          if (/扫码登录|登录后/.test(body)) return { state: 'login' };
+          if (/验证|安全校验|访问频繁/.test(body)) return { state: 'verification' };
+          return { state: 'waiting' };
+        }
+        input.focus();
+        return { state: 'ready' };
+      })()
+    `, true);
+    if (result?.state === 'ready') {
+      const throttle = lastDouyinChatSentAt + 3000 - Date.now();
+      if (throttle > 0) await new Promise(resolve => setTimeout(resolve, throttle));
+      const modifier = process.platform === 'darwin' ? 'meta' : 'control';
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [modifier] });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [modifier] });
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+      window.webContents.insertText(content);
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+      lastDouyinChatSentAt = Date.now();
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const remaining = await window.webContents.executeJavaScript(`
+        (() => {
+          const input = ${selectors}.flatMap(selector => Array.from(document.querySelectorAll(selector))).find(element => {
+            const rect = element?.getBoundingClientRect?.();
+            return Boolean(rect && rect.width > 0 && rect.height > 0);
+          });
+          return String(input?.value ?? input?.innerText ?? '').replace(/[\\u200B\\s]/g, '');
+        })()
+      `, true);
+      if (!remaining) return { ok: true, mode: 'hidden-page', confirmed: 'input-cleared' };
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [modifier] });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [modifier] });
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+      throw new Error('弹幕未被直播间接收，可能触发了风控、验证或字数限制');
+    }
+    if (result?.state === 'login') throw new Error('后台发送会话未登录，请重新同步 Cookie');
+    if (result?.state === 'verification') throw new Error('抖音要求安全验证，后台发送已暂停');
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw new Error('直播间弹幕输入框加载超时，请确认主播正在开播且抖音账号已登录');
+}
+
 async function douyinCookies() {
   return session.fromPartition(DOUYIN_PARTITION).cookies.get({ domain: 'douyin.com' });
 }
@@ -660,7 +832,64 @@ async function importDouyinCookie(rawCookie) {
   return syncDouyinSession();
 }
 
+let audioRouteMonitor = null;
+let audioGuardReady = false;
+function startAudioRouteMonitor() {
+  if (process.platform !== 'darwin') return;
+  const executable = require('node:path').join(__dirname.replace('app.asar', 'app.asar.unpacked'), 'audio-route-monitor');
+  audioRouteMonitor = spawn(executable, [], { stdio: ['ignore', 'pipe', 'ignore'] });
+  let pending = '';
+  const protect = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.setAudioMuted(true);
+    mainWindow.webContents.send('audio:route-changed');
+  };
+  audioRouteMonitor.stdout.on('data', chunk => {
+    pending += chunk.toString();
+    const lines = pending.split('\n'); pending = lines.pop();
+    for (const line of lines) {
+      if (line === 'ready') audioGuardReady = true;
+      if (line === 'changed') protect();
+    }
+  });
+  audioRouteMonitor.on('error', () => { audioGuardReady = false; protect(); });
+  audioRouteMonitor.on('exit', () => { audioGuardReady = false; protect(); });
+}
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  audioRouteMonitor?.kill();
+});
+
 function registerIpc() {
+  ipcMain.handle('window:open-main', event => {
+    validateAppSender(event);
+    showMainWindow();
+    return { ok: true };
+  });
+  ipcMain.handle('window:open-mini', event => {
+    validateAppSender(event);
+    return openMiniWindow().then(() => ({ ok: true }));
+  });
+  ipcMain.handle('window:mini-expanded', (event, expanded) => {
+    if (!miniWindow || event.sender.id !== miniWindow.webContents.id) throw new Error('Invalid floating window');
+    const bounds = miniWindow.getBounds();
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const height = expanded ? Math.min(540, area.height) : 58;
+    miniWindow.setBounds({ x: bounds.x, y: Math.max(area.y, Math.min(bounds.y, area.y + area.height - height)), width: 336, height });
+  });
+  ipcMain.handle('window:close-mini', event => {
+    validateAppSender(event);
+    miniWindow?.close();
+    return { ok: true };
+  });
+  ipcMain.handle('quick:status', event => {
+    validateMainSender(event);
+    return { shortcut: globalShortcut.isRegistered('CommandOrControl+Shift+K'), audioGuard: audioGuardReady };
+  });
+  ipcMain.handle('audio:resume', event => {
+    validateMainSender(event);
+    mainWindow.webContents.setAudioMuted(false);
+  });
   ipcMain.handle('background:get-settings', (event) => {
     validateMainSender(event);
     const settings = loadBackgroundSettings();
@@ -684,6 +913,12 @@ function registerIpc() {
   ipcMain.handle('douyin:refresh-security', async (event, roomUrl) => {
     validateMainSender(event);
     return refreshDouyinSecurity(String(roomUrl || ''));
+  });
+  ipcMain.handle('douyin:send-hidden', (event, roomUrl, content) => {
+    validateMainSender(event);
+    const operation = senderQueue.then(() => sendDouyinChatHidden(String(roomUrl || ''), String(content || '')));
+    senderQueue = operation.catch(() => {});
+    return operation;
   });
   ipcMain.handle('douyin:import-cookie', async (event, rawCookie) => {
     validateMainSender(event);
@@ -790,6 +1025,11 @@ else {
       applyLoginItemSettings(loadBackgroundSettings());
       await startBackend();
       await createMainWindow();
+      globalShortcut.register('CommandOrControl+Shift+K', () => {
+        showMainWindow();
+        mainWindow?.webContents.send('quick:open');
+      });
+      startAudioRouteMonitor();
       await syncDouyinSession();
       createTray();
       ensureAutomaticRecording().catch((error) => {

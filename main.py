@@ -29,6 +29,7 @@ from typing import Any
 import configparser
 import httpx
 from src import spider, stream
+from src.recording_control import EngineControl, FileProgress, recording_cookie, stop_capture
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
@@ -46,6 +47,9 @@ platforms = ("\n国内站点：抖音|快手|虎牙|斗鱼|YY|B站|小红书|big
              "Youtube|Faceit|Picarto")
 
 recording = set()
+engine_control = EngineControl()
+if os.environ.get('LIVERECORDER_CONTROL_PIPE') == '1':
+    threading.Thread(target=engine_control.listen, args=(sys.stdin,), daemon=True).start()
 error_count = 0
 pre_max_request = 10
 max_request_lock = threading.Lock()
@@ -424,6 +428,8 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     process = subprocess.Popen(
         ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
     )
+    progress = FileProgress(save_file_path)
+    stalled = False
 
     subs_file_path = save_file_path.rsplit('.', maxsplit=1)[0]
     subs_thread_name = f'subs_{Path(subs_file_path).name}'
@@ -435,21 +441,24 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         create_var[subs_thread_name].start()
 
     while process.poll() is None:
+        if progress.stalled():
+            print(f"{record_name} 录像文件 90 秒未增长，正在安全封装并切换线路重试", flush=True)
+            stalled = True
+            stop_capture(process)
+            break
+        if progress.healthy:
+            engine_control.healthy(record_url)
         if record_url in url_comments or exit_recording:
             color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
             clear_record_info(record_name, record_url)
-            # process.terminate()
-            if os.name == 'nt':
-                if process.stdin:
-                    process.stdin.write(b'q')
-                    process.stdin.close()
-            else:
-                process.send_signal(signal.SIGINT)
-            process.wait()
+            stop_capture(process)
+            print(f"\n{record_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 录制文件已关闭\n", flush=True)
             return True
         time.sleep(1)
 
     return_code = process.returncode
+    if stalled or return_code != 0 or progress.size == 0:
+        engine_control.failed(record_url)
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
     if return_code == 0:
         if converts_to_mp4 and save_type == 'TS':
@@ -533,12 +542,14 @@ def is_flv_preferred_platform(link):
 
 
 def select_source_url(link, stream_info):
+    if 'douyin.com/' in link:
+        return engine_control.source(link, stream_info)
     if is_flv_preferred_platform(link):
         codec = utils.get_query_params(stream_info.get('flv_url'), "codec")
         if codec and codec[0] == 'h265':
             logger.warning("FLV is not supported for h265 codec, use HLS source instead")
         else:
-            return stream_info.get('flv_url')
+            return stream_info.get('flv_url') or stream_info.get('record_url')
 
     return stream_info.get('record_url')
 
@@ -577,22 +588,42 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             # print(f'\r全局代理:{global_proxy}')
             while True:
                 try:
+                    # Desktop profile refreshes can discover a new session ID
+                    # for an already-running radio-room worker.  Adopt that
+                    # identity before resolving the stream again.
+                    record_url = engine_control.current_url(record_url)
+                    if record_url in url_comments or exit_recording:
+                        return
                     port_info = []
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
+                            douyin_recording_cookie = recording_cookie(record_url, engine_control.cookie, dy_cookie)
                             if 'v.douyin.com' not in record_url and '/user/' not in record_url:
                                 json_data = asyncio.run(spider.get_douyin_web_stream_data(
                                     url=record_url,
                                     proxy_addr=proxy_address,
-                                    cookies=dy_cookie))
+                                    cookies=douyin_recording_cookie))
                             else:
                                 json_data = asyncio.run(spider.get_douyin_app_stream_data(
                                     url=record_url,
                                     proxy_addr=proxy_address,
-                                    cookies=dy_cookie))
+                                    cookies=douyin_recording_cookie))
                             port_info = asyncio.run(
                                 stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
+                            if not port_info or not port_info.get('is_live') or engine_control.prefer_page(record_url):
+                                # A successful API response can still omit the actual live stream.
+                                try:
+                                    page_data = asyncio.run(spider.get_douyin_live_page_room_data(
+                                        record_url, proxy_address,
+                                        douyin_recording_cookie))
+                                    page_info = asyncio.run(stream.get_douyin_stream_url(
+                                        page_data, record_quality, proxy_address))
+                                    if page_info and page_info.get('is_live'):
+                                        port_info = page_info
+                                        print(f"{anchor_name} 已切换网页直播数据源", flush=True)
+                                except Exception:
+                                    pass
 
                     elif record_url.find("https://www.tiktok.com/") > -1:
                         platform = 'TikTok直播'
@@ -1116,6 +1147,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 continue
 
                             real_url = select_source_url(record_url, port_info)
+                            if 'douyin.com/' in record_url and real_url:
+                                source_kind = 'HLS' if '.m3u8' in real_url.split('?')[0] else 'FLV'
+                                print(f"{record_name} 当前录制线路：{source_kind}", flush=True)
                             full_path = f'{default_path}/{platform}'
                             if real_url:
                                 now = datetime.datetime.today().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1635,7 +1669,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                     x = x - 1
                     if loop_time:
                         print(f'\r{anchor_name}循环等待{x}秒 ', end="")
-                    time.sleep(1)
+                    if engine_control.event(record_url).wait(1):
+                        engine_control.event(record_url).clear()
+                        # Bound rapid failures while still bypassing the normal poll delay.
+                        time.sleep(engine_control.retry_delay(record_url))
+                        break
+                    if record_url in url_comments or exit_recording:
+                        return
                 if loop_time:
                     print('\r检测直播间中...', end="")
         except Exception as e:
@@ -1644,6 +1684,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                 error_count += 1
                 error_window.append(1)
             time.sleep(2)
+
+
+def controlled_record(url_data, count_variable):
+    try:
+        start_record(url_data, count_variable)
+    finally:
+        engine_control.release(url_data[1])
+        if url_data[1] in running_list:
+            running_list.remove(url_data[1])
 
 
 def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> None:
@@ -1794,6 +1843,9 @@ while True:
                 ini_URL_content = file.read().strip()
 
         if not ini_URL_content.strip():
+            if os.environ.get('LIVERECORDER_CONTROL_PIPE') == '1':
+                time.sleep(3)
+                continue
             input_url = input('请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n')
             with open(url_config_file, 'w', encoding=text_encoding) as file:
                 file.write(input_url)
@@ -2101,7 +2153,7 @@ while True:
                             query = urllib.parse.parse_qs(parsed_url.query)
                             recorder_identity = {
                                 key: query[key][0]
-                                for key in ("lr_room_id", "lr_sec_user_id")
+                                for key in ("lr_room_id", "lr_sec_user_id", "lr_anonymous_recording")
                                 if query.get(key) and query[key][0]
                             }
                             if recorder_identity:
@@ -2138,6 +2190,8 @@ while True:
                 update_file(url_config_file, old_str=replace_words[0], new_str=new_word, start_str=start_with)
 
         text_no_repeat_url = list(set(url_tuples_list))
+        configured_urls = {entry[1] for entry in text_no_repeat_url}
+        url_comments.extend(url for url in list(running_list) if url not in configured_urls)
 
         if len(text_no_repeat_url) > 0:
             for url_tuple in text_no_repeat_url:
@@ -2146,14 +2200,14 @@ while True:
                 if url_tuple[1] in not_record_list:
                     continue
 
-                if url_tuple[1] not in running_list:
+                if url_tuple[1] not in running_list and engine_control.claim(url_tuple[1]):
                     print(f"\r{'新增' if not first_start else '传入'}地址: {url_tuple[1]}")
                     monitoring += 1
                     args = [url_tuple, monitoring]
-                    create_var[f'thread_{monitoring}'] = threading.Thread(target=start_record, args=args)
+                    create_var[f'thread_{monitoring}'] = threading.Thread(target=controlled_record, args=args)
                     create_var[f'thread_{monitoring}'].daemon = True
-                    create_var[f'thread_{monitoring}'].start()
                     running_list.append(url_tuple[1])
+                    create_var[f'thread_{monitoring}'].start()
                     time.sleep(local_delay_default)
         url_tuples_list = []
         first_start = False

@@ -1,10 +1,10 @@
 import { Badge, Button, Card, Group, Stack, Text, Title, type ButtonProps } from '@mantine/core';
 import type { ReactNode } from 'react';
 
-export function Panel({ title, badge, actions, children }: { title: string; badge?: ReactNode; actions?: ReactNode; children: ReactNode }) {
-  return <Card className="panel" radius="lg" padding={0} withBorder>
+export function Panel({ title, badge, actions, children, id }: { title: string; badge?: ReactNode; actions?: ReactNode; children: ReactNode; id?: string }) {
+  return <Card id={id} className="panel" radius="lg" padding={0} withBorder>
     <Group className="panelHeader" justify="space-between" wrap="nowrap">
-      <Group gap="sm"><Title order={3}>{title}</Title>{badge}</Group>{actions}
+      <Group className="panelHeading" gap="sm"><Title order={3}>{title}</Title>{badge}</Group>{actions && <div className="panelActions">{actions}</div>}
     </Group>
     <div className="panelBody">{children}</div>
   </Card>;
@@ -13,7 +13,9 @@ export function Panel({ title, badge, actions, children }: { title: string; badg
 export function Empty({ children }: { children: ReactNode }) { return <div className="empty"><Text c="dimmed">{children}</Text></div>; }
 export function StatusBadge({ value }: { value?: string }) {
   const map: Record<string, [string, string]> = { live: ['已开播', 'green'], incomplete: ['资料不完整', 'orange'], missed: ['疑似漏录', 'red'], offline: ['未开播', 'gray'], error: ['地址异常', 'red'], unknown: ['状态未知', 'gray'], recording: ['直播录制中', 'red'], reconnecting: ['断流重连中', 'orange'], finalizing: ['正在整理录像', 'blue'], waiting: ['等待开播', 'yellow'], pending: ['等待中', 'yellow'], stopped: ['服务已停止', 'gray'], uploading: ['上传中', 'blue'], completed: ['已完成', 'green'], failed: ['失败', 'red'], paused: ['已暂停', 'gray'], cancelled: ['已取消', 'gray'] };
-  const [label, color] = map[value || 'unknown'] || [value || '未知', 'gray'];
+  const [fallbackLabel, color] = map[value || 'unknown'] || [value || '未知', 'gray'];
+  const presenceLabels: Record<string, string> = { unknown: '待确认', error: '检测失败', live: '正在直播', recording: '录制中' };
+  const label = presenceLabels[value || 'unknown'] || fallbackLabel;
   return <Badge variant="light" color={color}>{label}</Badge>;
 }
 export function ActionButton({ children, ...props }: ButtonProps & { children: ReactNode }) { return <Button radius="md" {...props}>{children}</Button>; }

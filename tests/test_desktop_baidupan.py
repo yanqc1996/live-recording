@@ -4,11 +4,208 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from desktop_baidupan import BaiduPanUploadManager
 
 
 class BaiduPanUploadManagerTest(unittest.TestCase):
+    def test_media_presentation_distinguishes_history_from_confirmed_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'video')
+            manager = BaiduPanUploadManager(root, root)
+            manager._save_queue([])
+            uploaded = int(time.time())
+            manager.history_path.write_text(json.dumps({str(video):{'uploaded_at':uploaded,'remote_dir':'/archive'}}))
+            groups = [{'latest_modified':time.time()-600,'files':[{'path':str(video)}]}]
+            historic = manager.reconcile_files(groups)['files'][0]
+            self.assertEqual(historic['upload_evidence'], 'history')
+            self.assertEqual(historic['remote_checked_at'], 0)
+            self.assertEqual(historic['cleanup_due_at'], 0)
+            manager._ensure_worker = lambda: None
+            manager.save_config({'keep_local_days':1})
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'],'success','',True,[str(video)])
+            manager.clear_finished()
+            retained = manager.reconcile_files(groups)['files'][0]
+            self.assertTrue(retained['cleanup_enabled'])
+            self.assertGreaterEqual(retained['cleanup_due_at'],uploaded+86400)
+            manager.save_config({'delete_after_upload':False})
+            self.assertFalse(manager.reconcile_files(groups)['files'][0]['cleanup_enabled'])
+
+    def test_cleanup_error_survives_clearing_task_records_and_is_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'video')
+            manager = BaiduPanUploadManager(root, root)
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            with patch.object(Path, 'unlink', side_effect=PermissionError('busy')):
+                status = manager.clear_finished()
+            self.assertEqual(status['cleanup_pending'], 1)
+            self.assertEqual(status['cleanup_errors'][0]['error'], 'busy')
+            manager.status()
+            self.assertFalse(video.exists())
+
+    def test_corrupt_cleanup_ledger_does_not_clear_success_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'video')
+            manager = BaiduPanUploadManager(root, root)
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            manager.cleanup_path.write_text('broken json')
+            with self.assertRaises(ValueError):
+                manager.clear_finished()
+            self.assertEqual(len(manager._load_queue()), 1)
+            self.assertTrue(video.exists())
+
+    def test_new_upload_of_same_path_prevents_old_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'video')
+            manager = BaiduPanUploadManager(root, root)
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            manager._save_queue([{'id':'new', 'status':'pending', 'save_file_path':str(video)}])
+            manager._cleanup_uploaded_files()
+            self.assertTrue(video.exists())
+            self.assertEqual(len(manager._load_cleanup()), 1)
+
+    def test_clear_finished_keeps_cleanup_across_restart_until_retention_expires(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / 'record.mp4'
+            segment = root / 'record_000.mp4'
+            video.write_bytes(b'whole')
+            segment.write_bytes(b'part')
+            manager = BaiduPanUploadManager(root, root)
+            manager._start_cleanup_verification = lambda: None
+            manager._ensure_worker = lambda: None
+            manager.save_config({'keep_local_days': 1})
+            item = manager.enqueue_recording(str(video), cleanup_paths=[str(segment)])
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            manager.clear_finished()
+            self.assertEqual(manager._load_queue(), [])
+            self.assertTrue(video.exists())
+            self.assertTrue(segment.exists())
+            restarted = BaiduPanUploadManager(root, root)
+            with patch('desktop_baidupan.time.time', return_value=time.time()+86401):
+                restarted.status()
+            self.assertFalse(video.exists())
+            self.assertFalse(segment.exists())
+            self.assertEqual(restarted._load_cleanup(), {})
+
+    def test_changed_file_is_not_deleted_after_task_list_is_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'original')
+            manager = BaiduPanUploadManager(root, root)
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            video.write_bytes(b'changed locally')
+            manager.clear_finished()
+            self.assertTrue(video.exists())
+            self.assertIn('发生变化', manager._load_cleanup()[item['id']]['cleanup_error'])
+
+    def test_disabling_cleanup_preserves_cleared_task_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'original')
+            manager = BaiduPanUploadManager(root, root)
+            manager._ensure_worker = lambda: None
+            item = manager.enqueue_recording(str(video))
+            manager._finish_item(item['id'], 'success', '', True, [str(video)])
+            manager.save_config({'delete_after_upload': False})
+            manager.clear_finished()
+            self.assertTrue(video.exists())
+
+    def test_history_requires_remote_size_confirmation_before_cleanup(self):
+        for remote_output, returncode, removed in [('CLEANUP|F|5\n',0,True), ('CLEANUP|F|99\n',0,False), ('',1,False), ('',0,False)]:
+            with self.subTest(output=remote_output), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                video = root/'record.mp4'
+                segment = root/'record_000.mp4'
+                for path in [video, segment]:
+                    path.write_bytes(b'video')
+                    os.utime(path,(time.time()-3*86400,time.time()-3*86400))
+                manager = BaiduPanUploadManager(root, root)
+                manager._ensure_worker = lambda: None
+                manager.save_config({'enabled':True,'keep_local_days':1})
+                manager.history_path.write_text(json.dumps({str(video): {'remote_dir':'/archive','uploaded_at':int(time.time()-2*86400)}}))
+                manager._recover_history_cleanup([{'latest_modified':time.time()-3*86400,'merged_file':{'path':str(video)},'segments':[{'path':str(segment)}]}])
+                candidates = list(manager._load_cleanup().values())
+                self.assertEqual(len(candidates),1)
+                manager._cleanup_uploaded_files()
+                self.assertTrue(video.exists())
+                with patch('desktop_baidupan.subprocess.run') as run:
+                    run.return_value.returncode = returncode
+                    run.return_value.stdout = remote_output
+                    manager._verify_history_cleanup(candidates)
+                self.assertEqual(not video.exists(), removed)
+                self.assertEqual(not segment.exists(), removed)
+                if not removed:
+                    self.assertTrue(next(iter(manager._load_cleanup().values()))['cleanup_error'])
+
+    def test_history_does_not_recover_active_or_changed_recordings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root/'record.mp4'
+            video.write_bytes(b'new data')
+            manager = BaiduPanUploadManager(root, root)
+            manager._ensure_worker = lambda: None
+            manager.save_config({'enabled':True})
+            manager.history_path.write_text(json.dumps({str(video): {'remote_dir':'/archive','uploaded_at':int(time.time()-86400)}}))
+            for modified in [time.time(),time.time()-600]:
+                manager._recover_history_cleanup([{'latest_modified':modified,'files':[{'path':str(video)}]}])
+            self.assertEqual(manager._load_cleanup(), {})
+
+    def test_transcription_failure_allows_upload_and_verified_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / 'record.ts'
+            video.write_bytes(b'video')
+            def fail(item, cancelled):
+                raise RuntimeError('转写失败')
+            manager = BaiduPanUploadManager(root, root, before_upload=fail)
+            item = manager.enqueue_recording(str(video), record_name='主播')
+            claimed = manager._claim_pending_items(1)[0]
+            with patch('desktop_baidupan.subprocess.Popen') as process:
+                process.return_value.stdout = iter([])
+                process.return_value.wait.return_value = 0
+                manager._run_item(claimed)
+                process.assert_called_once()
+            saved = manager._load_queue()[0]
+            self.assertEqual(saved['status'], 'success')
+            self.assertIn('转写失败', saved['transcription_error'])
+            self.assertFalse(saved['transcription_archived'])
+            self.assertFalse(video.exists())
+
+    def test_upload_pause_during_transcription_still_prevents_upload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / 'record.ts'
+            video.write_bytes(b'video')
+            manager = BaiduPanUploadManager(root, root)
+            def pause(item, cancelled):
+                manager.pause_item(item['id'])
+                raise InterruptedError('暂停')
+            manager.before_upload = pause
+            manager.enqueue_recording(str(video))
+            claimed = manager._claim_pending_items(1)[0]
+            with patch('desktop_baidupan.subprocess.Popen') as process:
+                manager._run_item(claimed)
+                process.assert_not_called()
+            self.assertEqual(manager._load_queue()[0]['status'], 'paused')
+            self.assertTrue(video.exists())
+
     def test_interrupted_upload_returns_to_pending_on_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

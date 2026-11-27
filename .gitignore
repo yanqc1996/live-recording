@@ -88,6 +88,7 @@ ipython_config.py
 
 # DouyinLiveRecord
 backup_config/
+electron/audio-route-monitor
 logs/
 node/
 node-v*.zip

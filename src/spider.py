@@ -111,6 +111,51 @@ async def get_douyin_reflow_room_data_with_retry(
     raise RuntimeError(f'Douyin reflow retry exhausted: {last_error}') from last_error
 
 
+def _extract_douyin_room_from_live_page(html: str) -> dict:
+    """Extract the serialized room object embedded in Douyin's live page.
+
+    The PC enter and mobile reflow APIs are independently risk-controlled.  The
+    normal live page can still contain a complete room object (including pull
+    URLs) when both JSON APIs return an empty payload, so retain it as a final
+    recording fallback.
+    """
+    normalized = str(html or '')
+    for _ in range(4):
+        match = re.search(r'"roomInfo"\s*:\s*\{\s*"room"\s*:\s*', normalized)
+        if match:
+            start = match.end()
+            try:
+                room, _ = json.JSONDecoder().raw_decode(normalized[start:])
+            except (json.JSONDecodeError, TypeError):
+                room = None
+            if isinstance(room, dict) and room:
+                owner = room.get('owner') or room.get('anchor') or {}
+                room['anchor_name'] = room.get('anchor_name') or owner.get('nickname') or ''
+                return room
+        updated = normalized.replace(r'\"', '"').replace(r'\\', '\\')
+        if updated == normalized:
+            break
+        normalized = updated
+    raise RuntimeError('Douyin live page contained no usable room data')
+
+
+async def get_douyin_live_page_room_data(url: str, proxy_addr: OptionalStr = None,
+                                         cookies: OptionalStr = None) -> dict:
+    headers = {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Referer': 'https://live.douyin.com/?from_nav=1',
+        'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),
+    }
+    if cookies:
+        headers['Cookie'] = cookies
+    clean_url = url.split('?', 1)[0]
+    html = await async_req(url=clean_url, proxy_addr=proxy_addr, headers=headers)
+    return _extract_douyin_room_from_live_page(html)
+
+
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
@@ -129,16 +174,6 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
         stored_room_id = str((recorder_params.get('lr_room_id') or [''])[0]).strip()
         stored_sec_uid = str((recorder_params.get('lr_sec_user_id') or [''])[0]).strip()
 
-        # Radio and other special-layout rooms can deliberately return 404 for
-        # their PC page. Prefer the identity resolved from the anchor profile.
-        if stored_room_id and stored_sec_uid:
-            try:
-                return await get_douyin_reflow_room_data_with_retry(
-                    stored_room_id, stored_sec_uid, proxy_addr, cookies
-                )
-            except Exception:
-                # A room id can rotate; retain the PC endpoint as a fallback.
-                pass
         params = {
             "aid": "6383",
             "app_name": "douyin_web",
@@ -177,8 +212,28 @@ async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, c
                 room_data = await get_douyin_reflow_room_data_with_retry(
                     room_id, sec_uid, proxy_addr, cookies
                 )
-        except Exception as e:
-            raise Exception(f"Douyin web data fetch error, because {e}.")
+        except Exception as api_error:
+            # The desktop entry endpoint is the most reliable source for a
+            # normal video room.  Saved reflow identity exists on every room,
+            # so using it first accidentally routed traditional rooms through
+            # the radio fallback and could return a stale/offline session.
+            # Only use reflow after the normal PC lookup has genuinely failed.
+            room_data = None
+            if stored_room_id and stored_sec_uid:
+                try:
+                    room_data = await get_douyin_reflow_room_data_with_retry(
+                        stored_room_id, stored_sec_uid, proxy_addr, cookies
+                    )
+                except Exception:
+                    pass
+            if not room_data:
+                try:
+                    room_data = await get_douyin_live_page_room_data(url, proxy_addr, cookies)
+                except Exception as page_error:
+                    raise Exception(
+                        f"Douyin web data fetch error, because {api_error}; "
+                        f"live page fallback also failed: {page_error}."
+                    ) from page_error
 
         if room_data['status'] == 2:
             if 'stream_url' not in room_data:

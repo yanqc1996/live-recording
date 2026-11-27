@@ -40,6 +40,7 @@ class AnchorStoreTest(unittest.TestCase):
                 "room_id": " 98765 ",
                 "output_dir": " /tmp/主播 ",
                 "enabled_recording": False,
+                "anonymous_recording": True,
             })
 
             self.assertEqual("新名称", updated["name"])
@@ -50,6 +51,7 @@ class AnchorStoreTest(unittest.TestCase):
             self.assertEqual("98765", updated["room_id"])
             self.assertEqual("/tmp/主播", updated["output_dir"])
             self.assertFalse(updated["enabled_recording"])
+            self.assertTrue(updated["anonymous_recording"])
             self.assertEqual(["旧名称", "新名称"], updated["aliases"]["names"])
             self.assertEqual(
                 ["https://www.douyin.com/user/old", "https://www.douyin.com/user/new"],
@@ -162,7 +164,7 @@ class RoomStoreTest(unittest.TestCase):
 
             rooms = store.sync_from_anchors([
                 {"name": "甲", "live_url": "https://live.douyin.com/1", "enabled_recording": True},
-                {"name": "乙", "profile_url": "https://live.douyin.com/2?from=x", "enabled_recording": False},
+                {"name": "乙", "profile_url": "https://live.douyin.com/2?from=x", "enabled_recording": False, "anonymous_recording": True},
                 {"name": "无直播地址", "profile_url": "https://www.douyin.com/user/x", "enabled_recording": True},
             ])
 
@@ -171,7 +173,8 @@ class RoomStoreTest(unittest.TestCase):
             self.assertIn("## keep this", content)
             self.assertNotIn("旧主播", content)
             self.assertIn("https://live.douyin.com/1,主播: 甲", content)
-            self.assertIn("#https://live.douyin.com/2,主播: 乙", content)
+            self.assertIn("#https://live.douyin.com/2?lr_anonymous_recording=1,主播: 乙", content)
+            self.assertIn("lr_anonymous_recording=1", content)
 
     def test_sync_from_anchors_includes_reflow_identity_for_radio_rooms(self):
         with tempfile.TemporaryDirectory() as directory:

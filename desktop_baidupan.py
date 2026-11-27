@@ -69,13 +69,17 @@ class BaiduPanUploadManager:
         project_root: Path,
         bundle_root: Path,
         on_log: Callable[[str], None] | None = None,
+        before_upload: Callable | None = None,
     ):
         self.project_root = project_root
         self.bundle_root = bundle_root
         self.on_log = on_log
+        self.before_upload = before_upload
         self.config_path = project_root / "config" / "baidupan_upload.json"
         self.queue_path = project_root / "config" / "baidupan_queue.json"
         self.history_path = project_root / "config" / "baidupan_history.json"
+        self.cleanup_path = project_root / "config" / "baidupan_cleanup.json"
+        self._cleanup_worker: threading.Thread | None = None
         self.logs: deque[str] = deque(maxlen=800)
         self._log_offset = 0
         self._lock = threading.RLock()
@@ -187,9 +191,154 @@ class BaiduPanUploadManager:
         except Exception:
             return {}
 
+    def _load_cleanup(self) -> dict:
+        if not self.cleanup_path.exists():
+            return {}
+        # Never overwrite a damaged ledger: it is the durable deletion obligation.
+        data = json.loads(self.cleanup_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("本地清理记录损坏，请保留文件并恢复备份")
+        return data
+
+    @staticmethod
+    def _file_snapshot(paths: list[str]) -> dict:
+        result = {}
+        for value in paths:
+            path = Path(value)
+            try:
+                if path.is_file() and not path.is_symlink():
+                    stat = path.stat()
+                    result[str(path)] = [stat.st_size, stat.st_mtime_ns]
+            except OSError:
+                continue
+        return result
+
+    def _remember_cleanup(self, item: dict) -> None:
+        if not (item.get("status") == "success" and item.get("remote_verified")
+                and item.get("delete_after_upload") and not item.get("local_deleted")):
+            return
+        ledger = self._load_cleanup()
+        entry = dict(item)
+        paths = list(item.get("uploaded_files") or [item.get("save_file_path")]) + list(item.get("cleanup_paths") or [])
+        entry["file_snapshots"] = (item.get("file_snapshots") or ledger.get(item["id"], {}).get("file_snapshots")
+                                   or self._file_snapshot([p for p in paths if p]))
+        ledger[item["id"]] = entry
+        _atomic_json(self.cleanup_path, ledger)
+
+    def _recover_history_cleanup(self, groups: list[dict]) -> None:
+        config = self.load_config()
+        if not (config.get("enabled") and config.get("delete_after_upload")):
+            return
+        with self._lock:
+            ledger = self._load_cleanup()
+            queue = self._load_queue()
+            known = {str(p) for item in [*queue, *ledger.values()]
+                     for p in (item.get("uploaded_files") or [item.get("save_file_path")]) if p}
+            history = self._load_history()
+            changed = False
+            for group in groups:
+                if time.time() - float(group.get("latest_modified") or 0) < 300:
+                    continue
+                merged = group.get("merged_file")
+                for file in [merged] if merged else group.get("files") or []:
+                    path = str(Path(str(file.get("path") or "")))
+                    past = history.get(path) or {}
+                    if path in known or not past.get("remote_dir") or not past.get("uploaded_at"):
+                        continue
+                    paths = [path] + ([str(p["path"]) for p in group.get("segments") or []] if merged else [])
+                    snapshots = self._file_snapshot(paths)
+                    # History alone cannot authorize deleting a later replacement.
+                    if path not in snapshots or any(value[1] / 1e9 > past["uploaded_at"] + 1 for value in snapshots.values()):
+                        continue
+                    item_id = "history-" + uuid.uuid4().hex
+                    ledger[item_id] = {
+                        "id": item_id, "status": "success", "source": "history_cleanup",
+                        "save_file_path": path, "uploaded_files": [path], "cleanup_paths": paths[1:],
+                        "remote_dir": past["remote_dir"], "updated_at": past["uploaded_at"],
+                        "delete_after_upload": True, "keep_local_days": config["keep_local_days"],
+                        "cleanup_below_free_gb": config["cleanup_below_free_gb"],
+                        "remote_verified": False, "local_deleted": False,
+                        "needs_remote_check": True, "file_snapshots": snapshots,
+                    }
+                    known.add(path)
+                    changed = True
+            if changed:
+                _atomic_json(self.cleanup_path, ledger)
+
+    def _start_cleanup_verification(self) -> None:
+        with self._lock:
+            if self._cleanup_worker and self._cleanup_worker.is_alive():
+                return
+            config = self.load_config()
+            if not (config.get("enabled") and config.get("delete_after_upload")) or config.get("paused"):
+                return
+            candidates = [dict(item) for item in self._load_cleanup().values()
+                          if item.get("needs_remote_check") and time.time() >= item.get("next_check_at", 0)
+                          and time.time() - item["updated_at"] >= item["keep_local_days"] * 86400]
+            if not candidates:
+                return
+            self._cleanup_worker = threading.Thread(target=self._verify_history_cleanup, args=(candidates,), daemon=True)
+            self._cleanup_worker.start()
+
+    def _verify_history_cleanup(self, candidates: list[dict]) -> None:
+        for item in candidates:
+            if self._stop.is_set():
+                return
+            error = ""
+            try:
+                path = Path(item["save_file_path"])
+                remote = f"{item['remote_dir'].rstrip('/')}/{path.name}"
+                result = subprocess.run([*bypy_command(self.load_config()["bypy_bin"]), "meta", remote,
+                                         "CLEANUP|$t|$s"], cwd=self.project_root, capture_output=True,
+                                        text=True, timeout=60, check=False)
+                match = re.search(r"^CLEANUP\|F\|(\d+)\s*$", result.stdout, re.MULTILINE)
+                expected = item["file_snapshots"][str(path)][0]
+                if result.returncode or not match or int(match.group(1)) != expected:
+                    raise ValueError("网盘文件未确认或大小不一致，已保留本地文件")
+            except Exception as exc:
+                error = str(exc)
+            with self._lock:
+                ledger = self._load_cleanup()
+                current = ledger.get(item["id"])
+                if not current:
+                    continue
+                current["cleanup_error"] = error
+                if error:
+                    current["next_check_at"] = time.time() + 3600
+                else:
+                    current.update(remote_verified=True, needs_remote_check=False, remote_checked_at=int(time.time()))
+                _atomic_json(self.cleanup_path, ledger)
+            if error:
+                self._append_log(f"历史录像清理暂停：{item['save_file_path']} · {error}")
+        self._cleanup_uploaded_files()
+
     def reconcile_files(self, groups: list[dict], enqueue: bool = False) -> dict:
+        if enqueue:
+            self._recover_history_cleanup(groups)
+            self._start_cleanup_verification()
         queue = self._load_queue()
         history = self._load_history()
+        with self._lock:
+            cleanup = self._load_cleanup()
+        cleanup_by_path = {}
+        cleanup_allowed = self.load_config().get("delete_after_upload")
+        for entry in cleanup.values():
+            for value in [*(entry.get("uploaded_files") or [entry.get("save_file_path")]), *(entry.get("cleanup_paths") or [])]:
+                if value:
+                    cleanup_by_path[str(Path(value))] = entry
+
+        def presentation(path: str, item: dict | None = None) -> dict:
+            retained = cleanup_by_path.get(path) or item or {}
+            uploaded_at = int(retained.get("updated_at") or (history.get(path) or {}).get("uploaded_at") or 0)
+            enabled = bool(cleanup_allowed and retained.get("delete_after_upload") and retained.get("status") == "success")
+            return {
+                "upload_evidence": "task" if item else "history" if path in history else "none",
+                "uploaded_at": uploaded_at,
+                "cleanup_enabled": enabled,
+                "cleanup_due_at": uploaded_at + int(retained.get("keep_local_days") or 0) * 86400 if enabled and uploaded_at else 0,
+                "remote_checked_at": retained.get("remote_checked_at", 0),
+                "cleanup_error": retained.get("cleanup_error", ""),
+            }
         by_path = {}
         for item in queue:
             for value in item.get("uploaded_files") or [item.get("save_file_path")]:
@@ -208,12 +357,13 @@ class BaiduPanUploadManager:
             } if merged_file else set()
             upload_files = [merged_file] if merged_file else (group.get("files") or [])
             for path in archived_paths:
-                files.append({"path": path, "status": "archived", "item_id": ""})
+                files.append({"path": path, "status": "archived", "item_id": "", **presentation(path),
+                              "merged_path": str(merged_file.get("path") or "")})
             for file_item in upload_files:
                 path = str(Path(str(file_item.get("path") or "")))
                 item = by_path.get(path)
                 status = str(item.get("status")) if item else ("success" if path in history else "untracked")
-                files.append({"path": path, "status": status, "item_id": item.get("id") if item else ""})
+                files.append({"path": path, "status": status, "item_id": item.get("id") if item else "", **presentation(path, item)})
                 if enqueue and status == "untracked" and not group_active:
                     self.enqueue_recording(path, record_name=anchor, save_type=Path(path).suffix.lstrip(".").upper(), source="reconcile")
                     added += 1
@@ -221,9 +371,15 @@ class BaiduPanUploadManager:
 
     def status(self) -> dict:
         self._cleanup_uploaded_files()
+        self._start_cleanup_verification()
         with self._lock:
             queue = self._load_queue()
+            cleanup = self._load_cleanup()
         return {
+            "cleanup_pending": len(cleanup),
+            "cleanup_needs_verification": sum(bool(item.get("needs_remote_check")) for item in cleanup.values()),
+            "cleanup_errors": [{"path": item.get("save_file_path"), "error": item["cleanup_error"]}
+                               for item in cleanup.values() if item.get("cleanup_error")][:20],
             "config": self.load_config(),
             "queue": sorted(queue, key=lambda item: item.get("created_at", 0), reverse=True)[:80],
             "running": bool(self._worker and self._worker.is_alive()),
@@ -486,7 +642,10 @@ class BaiduPanUploadManager:
 
     def clear_finished(self) -> dict:
         with self._lock:
-            queue = [item for item in self._load_queue() if item.get("status") not in {"success", "failed", "cancelled"}]
+            original = self._load_queue()
+            for item in original:
+                self._remember_cleanup(item)
+            queue = [item for item in original if item.get("status") not in {"success", "failed", "cancelled"}]
             self._save_queue(queue)
         return self.status()
 
@@ -577,6 +736,23 @@ class BaiduPanUploadManager:
                 "started_at": time.time(),
             }
         try:
+            if self.before_upload:
+                self._progresses[item['id']]['stage'] = '等待本地转写归档'
+                transcription_error = ''
+                try:
+                    self.before_upload(item, lambda: self._stop.is_set() or self._queue_status(item['id']) in {'paused', 'cancelled'})
+                except Exception as exc:
+                    transcription_error = str(exc)
+                    self._append_log(f"转写未完成，继续上传：{item.get('save_file_path')} · {exc}")
+                if self._stop.is_set() or self._queue_status(item['id']) in {'paused', 'cancelled'}:
+                    return
+                with self._lock:
+                    queue = self._load_queue()
+                    for queued in queue:
+                        if queued['id'] == item['id']:
+                            queued['transcription_archived'] = not bool(transcription_error)
+                            queued['transcription_error'] = transcription_error
+                    self._save_queue(queue)
             process = subprocess.Popen(
                 cmd,
                 cwd=self.project_root,
@@ -628,7 +804,8 @@ class BaiduPanUploadManager:
                 self._finish_item(item["id"], "failed", "\n".join(tail)[-2000:] or f"退出码 {return_code}")
                 self._append_log(f"上传失败：{item.get('save_file_path')}")
         except Exception as exc:
-            self._finish_item(item["id"], "failed", str(exc))
+            if self._queue_status(item['id']) not in {'paused', 'cancelled'}:
+                self._finish_item(item["id"], "failed", str(exc))
             self._append_log(f"上传异常：{exc}")
         finally:
             with self._lock:
@@ -650,23 +827,52 @@ class BaiduPanUploadManager:
                         for value in uploaded_files:
                             history[str(Path(value))] = {"uploaded_at": int(time.time()), "remote_dir": item.get("remote_dir", "")}
                         _atomic_json(self.history_path, history)
+                    self._remember_cleanup(item)
                     break
             self._save_queue(queue)
 
     def _cleanup_uploaded_files(self) -> None:
         with self._lock:
+            if not self.load_config().get("delete_after_upload"):
+                return
             queue = self._load_queue()
+            ledger = self._load_cleanup()
+            entries = dict(ledger)
+            for queued in queue:
+                if queued.get("id") in ledger:
+                    queued.setdefault("file_snapshots", ledger[queued["id"]].get("file_snapshots", {}))
+                entries[queued["id"]] = queued
+            protected = {str(p) for queued in queue if queued.get("status") in {"pending", "uploading", "paused"}
+                         for p in [*(queued.get("uploaded_files") or [queued.get("save_file_path")]),
+                                   *(queued.get("cleanup_paths") or [])] if p}
             changed = False
+            ledger_changed = False
             now = time.time()
-            for item in queue:
+            for item in entries.values():
                 if not (item.get("status") == "success" and item.get("remote_verified") and item.get("delete_after_upload")):
                     continue
                 if item.get("local_deleted"):
+                    if ledger.pop(item["id"], None) is not None:
+                        ledger_changed = True
                     continue
                 paths = [Path(str(value)) for value in item.get("uploaded_files") or [item.get("save_file_path") or ""]]
                 paths.extend(Path(str(value)) for value in item.get("cleanup_paths") or [])
                 paths = list(dict.fromkeys(paths))
                 existing = [path for path in paths if path.exists() and path.is_file()]
+                if any(str(path) in protected or path.is_symlink() for path in existing):
+                    continue
+                snapshots = item.get("file_snapshots")
+                current_snapshots = self._file_snapshot([str(path) for path in existing])
+                if snapshots is not None and any(snapshots.get(str(path)) != current_snapshots.get(str(path))
+                                                 or str(path) not in current_snapshots for path in existing):
+                    message = "本地文件在上传后发生变化，已跳过清理"
+                    if item.get("cleanup_error") != message:
+                        item["cleanup_error"] = message
+                        changed = True
+                        if item["id"] in ledger:
+                            ledger[item["id"]] = item
+                            ledger_changed = True
+                    continue
                 if existing:
                     keep_seconds = int(item.get("keep_local_days") or 0) * 86400
                     uploaded_at = int(item.get("updated_at") or item.get("created_at") or 0)
@@ -682,8 +888,15 @@ class BaiduPanUploadManager:
                     item["local_deleted"] = True
                     item["deleted_at"] = int(now)
                     changed = True
+                    if ledger.pop(item["id"], None) is not None:
+                        ledger_changed = True
                 except OSError as exc:
                     item["cleanup_error"] = str(exc)
                     changed = True
+                    if item["id"] in ledger:
+                        ledger[item["id"]] = item
+                        ledger_changed = True
             if changed:
                 self._save_queue(queue)
+            if ledger_changed:
+                _atomic_json(self.cleanup_path, ledger)
