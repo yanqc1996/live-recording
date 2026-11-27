@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { api } from '../api';
 import { Empty, PageGrid, Panel, StatusBadge, anchorLiveUrl, formatBytes } from '../components';
 import type { Anchor, AppState } from '../types';
-import { anchorStatus, sortedAnchors } from '../anchorStatus';
+import { anchorStatus, monitoredAnchors } from '../anchorStatus';
 
 export function DashboardPage({ state, refresh, notify, logs, detailed, setDetailed, clearLogs }: { state: AppState; refresh: () => Promise<void>; notify: (m: string, error?: boolean) => void; logs: string[]; detailed: boolean; setDetailed: (value: boolean) => void; clearLogs: () => void }) {
   const [room, setRoom] = useState('');
@@ -38,8 +38,9 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
     if (!presence.fresh) return 'unknown';
     return anchor.last_live_status || 'unknown';
   };
-  const activeCount = state.anchors.filter(anchor => anchorStatus(anchor, state).live).length;
-  const recordingCount = state.anchors.filter(anchor => displayState(anchor) === 'recording').length;
+  const monitored = monitoredAnchors(state);
+  const activeCount = monitored.filter(anchor => anchorStatus(anchor, state).live).length;
+  const recordingCount = monitored.filter(anchor => displayState(anchor) === 'recording').length;
   const logEvent = (line: string) => {
     if (line.includes('准备开始录制')) return { type:'recording', label:'开始录制', color:'red', icon:<Video size={16}/> };
     if (line.includes('直播录制完成')) return { type:'completed', label:'录制完成', color:'green', icon:<FileCheck2 size={16}/> };
@@ -50,12 +51,12 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
   return <PageGrid>
     {state.storage?.level&&state.storage.level!=='healthy'&&<div className="wideColumn"><Alert color={state.storage.level==='critical'?'red':'yellow'} title={state.storage.level==='critical'?'磁盘空间已达到停止阈值':'磁盘空间不足'} icon={<TriangleAlert size={18}/>}>录像磁盘剩余 {state.storage.free_gb} GB；预警阈值 {state.storage.warning_gb} GB，停止阈值 {state.storage.stop_gb} GB。{state.storage.level==='critical'?' 系统会安全停止录制，释放空间后可重新启动。':' 建议清理已归档录像。'}</Alert></div>}
     <div className="wideColumn"><Panel title="录制总览" badge={<StatusBadge value={running ? recordingCount ? 'recording' : 'waiting' : 'stopped'} />} actions={<Button size="xs" variant="subtle" leftSection={<Activity size={14}/>} onClick={()=>setLogsOpen(true)}>运行事件{logs.length ? ` · ${logs.length}` : ''}</Button>}>
-      <div className="overviewRow"><div><Text fw={800} size="lg">{state.status?.auto_recovery?.recovering?'录制服务正在自动恢复':running ? recordingCount ? `正在录制 ${recordingCount} 位主播` : '监控运行中，等待主播开播' : '录制服务未启动'}</Text><Text c="dimmed" size="sm">{state.status?.auto_recovery?.recovering?`进程异常退出，正在进行第 ${state.status.auto_recovery.restart_attempts} 次恢复`:running ? '系统会持续巡检已启用主播，检测到开播后自动录制。' : '启动后会在后台自动巡检，不需要保持窗口打开。'}</Text></div><div className="recordingSummary"><div><strong>{state.anchors.filter(a => a.enabled_recording && anchorLiveUrl(a)).length}</strong><span>监控主播</span></div><div className="live"><strong>{activeCount}</strong><span>当前开播</span></div><div className="recording"><strong>{recordingCount}</strong><span>正在录制</span></div></div></div>
+      <div className="overviewRow"><div><Text fw={800} size="lg">{state.status?.auto_recovery?.recovering?'录制服务正在自动恢复':running ? recordingCount ? `正在录制 ${recordingCount} 位主播` : '监控运行中，等待主播开播' : '录制服务未启动'}</Text><Text c="dimmed" size="sm">{state.status?.auto_recovery?.recovering?`进程异常退出，正在进行第 ${state.status.auto_recovery.restart_attempts} 次恢复`:running ? '系统会持续巡检已启用主播，检测到开播后自动录制。' : '启动后会在后台自动巡检，不需要保持窗口打开。'}</Text></div><div className="recordingSummary"><div><strong>{monitored.length}</strong><span>监控主播</span></div><div className="live"><strong>{activeCount}</strong><span>当前开播</span></div><div className="recording"><strong>{recordingCount}</strong><span>正在录制</span></div></div></div>
     </Panel></div>
     <div className="column">
-      <Panel title="主播实时状态" badge={<Text c="dimmed" size="sm">录制与开播优先显示</Text>}>
-        <Text size="xs" c="dimmed" mb="sm">开播状态与录制状态分别显示；录制中断时会自动尝试恢复。</Text>
-        <div className="list roomStatusList">{state.anchors.length ? sortedAnchors(state).map(item => { const runtime=roomStates[item.id]; const status=displayState(item); const presence=anchorStatus(item,state); return <div className={`roomCard roomStatus ${status}`} key={item.id}>
+      <Panel title="监控主播状态" badge={<Text c="dimmed" size="sm">{monitored.length} 位 · 录制与开播优先</Text>}>
+        <Text size="xs" c="dimmed" mb="sm">仅显示已加入自动录制的主播，其他主播可在主播库管理。</Text>
+        <div className="list roomStatusList">{monitored.length ? monitored.map(item => { const runtime=roomStates[item.id]; const status=displayState(item); const presence=anchorStatus(item,state); return <div className={`roomCard roomStatus ${status}`} key={item.id}>
           <Group justify="space-between" wrap="nowrap" gap="sm">
             <Group gap="sm" wrap="nowrap" className="roomCardIdentity"><span className="roomStateDot"/><Text fw={650} truncate>{item.name}</Text></Group>
             <Badge variant="light" color={presence.recording?'red':presence.live?'green':'gray'}>{presence.label}</Badge>
@@ -73,7 +74,7 @@ export function DashboardPage({ state, refresh, notify, logs, detailed, setDetai
             </Group>
           </Group>
           </details>
-        </div>}) : <Empty>添加直播间后即可巡检并自动录制</Empty>}</div>
+        </div>}) : <Empty>暂无监控主播，请在主播库开启“参与自动录制”，或在下方添加直播间</Empty>}</div>
         <Group className="addBar" wrap="nowrap"><TextInput value={room} onChange={e => setRoom(e.currentTarget.value)} onKeyDown={e => e.key === 'Enter' && addRoom()} placeholder="粘贴直播间地址，加入统一主播库" leftSection={<Plus size={16} />} flex={1} /><Button disabled={!room.trim()} onClick={addRoom}>添加</Button></Group>
       </Panel>
     </div>

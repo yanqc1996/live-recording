@@ -1,6 +1,14 @@
 import { anchorLiveUrl } from './components';
 import type { Anchor, AppState } from './types';
 
+export function isMonitoredAnchor(anchor: Anchor) {
+  return anchor.enabled_recording !== false;
+}
+
+export function monitoredAnchors(state: AppState) {
+  return sortedAnchors(state).filter(isMonitoredAnchor);
+}
+
 export function anchorStatus(anchor: Anchor, state: AppState) {
   const recording = Boolean(state.status.running && state.status.room_states?.[anchor.id]?.state === 'recording');
   const checked = anchor.last_resolved_at || 0;
@@ -16,5 +24,7 @@ export function anchorStatus(anchor: Anchor, state: AppState) {
 
 export function sortedAnchors(state: AppState, query = '') {
   return state.anchors.filter(a => [a.name, ...(a.aliases?.names || [])].some(name => name.toLowerCase().includes(query.trim().toLowerCase())))
-    .sort((a, b) => anchorStatus(a, state).rank - anchorStatus(b, state).rank || a.name.localeCompare(b.name, 'zh-CN'));
+    .sort((a, b) => Number(isMonitoredAnchor(b)) - Number(isMonitoredAnchor(a))
+      || anchorStatus(a, state).rank - anchorStatus(b, state).rank
+      || a.name.localeCompare(b.name, 'zh-CN'));
 }

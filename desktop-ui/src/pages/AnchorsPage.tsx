@@ -55,7 +55,7 @@ export function AnchorsPage({ state, refresh, notify, navigate, activeAnchorId, 
   };
   if (collectionMode) return <CollectionEditor anchors={state.anchors} recording={!!state.status?.running} close={() => { if (canLeaveEditor()) setCollectionMode(false); }} refresh={refresh} notify={notify} />;
   return <PageGrid>
-    <div className="wideColumn anchorLibraryIntro"><div><Text fw={650}>选择主播，查看状态与资料</Text><Text size="xs" c="dimmed">正在录制和开播的主播优先显示</Text></div><Button leftSection={<UserPlus size={15}/>} onClick={()=>setAdding(true)}>添加主播</Button></div>
+    <div className="wideColumn anchorLibraryIntro"><div><Text fw={650}>选择主播，查看状态与资料</Text><Text size="xs" c="dimmed">监控主播优先显示，同组内录制中和开播的主播靠前</Text></div><Button leftSection={<UserPlus size={15}/>} onClick={()=>setAdding(true)}>添加主播</Button></div>
     <div className="column">
 
       <Panel title="主播库" badge={<Text c="dimmed" size="sm">{filtered.length} / {state.anchors.length}</Text>} actions={<Group gap="xs"><Button size="xs" variant="default" leftSection={<Sheet size={14} />} onClick={() => { if (canLeaveEditor()) setCollectionMode(true); }}>批量编辑</Button><Button size="xs" variant="subtle" loading={busy} leftSection={<RefreshCw size={14} />} onClick={() => run(() => api('/api/anchors/check-live', {}), '开播状态已更新')}>刷新状态</Button></Group>}>

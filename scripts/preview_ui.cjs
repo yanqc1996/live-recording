@@ -59,6 +59,7 @@ app.whenReady().then(async () => {
   let failed = false;
   try {
     await shot('dashboard', 'record');
+    if (!await win.webContents.executeJavaScript(`document.querySelectorAll('.roomStatusList .roomCard').length===4 && !document.querySelector('.roomStatusList').textContent.includes('叫我小榕')`)) throw new Error('Dashboard includes an unmonitored anchor');
     await shot('interaction', 'interact');
     await win.webContents.executeJavaScript(`document.querySelector('.anchorPicker input').click()`);
     await settle();
@@ -120,10 +121,10 @@ app.whenReady().then(async () => {
     await shot('narrow', 'record', 390, 760);
     await shot('mini', 'record', 336, 540, true);
     const before = await win.webContents.executeJavaScript(`document.querySelector('.miniAnchor').getBoundingClientRect().height`);
-    await win.webContents.executeJavaScript(`document.querySelectorAll('.miniAnchorSelect')[1].click()`);
+    await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.miniAnchorSelect')).find(el=>el.textContent.includes('hillusion')).click()`);
     await settle();
     const after = await win.webContents.executeJavaScript(`document.querySelector('.miniAnchor').getBoundingClientRect().height`);
-    if (before!==after || !await win.webContents.executeJavaScript(`document.querySelector('.miniSelectedActions').textContent.includes('叫我小榕')`)) throw new Error('Floating selection moved the list or did not update actions');
+    if (before!==after || !await win.webContents.executeJavaScript(`document.querySelector('.miniSelectedActions').textContent.includes('hillusion') && Array.from(document.querySelectorAll('.miniAnchorSelect')).at(-1).textContent.includes('叫我小榕')`)) throw new Error('Floating selection moved the list or monitored ordering failed');
     await win.webContents.executeJavaScript(`document.querySelector('.miniAnchorSelect').click()`);
     await settle();
     failAction = true;
