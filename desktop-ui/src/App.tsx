@@ -6,6 +6,7 @@ import type { AppState } from './types';
 import { anchorLiveUrl } from './components';
 import { DashboardPage } from './pages/DashboardPage';
 import { AnchorsPage } from './pages/AnchorsPage';
+import { canLeaveEditor } from './useUnsavedChanges';
 import { InteractionPage } from './pages/InteractionPage';
 import { WorksPage } from './pages/WorksPage';
 import { LibraryPage } from './pages/LibraryPage';
@@ -81,6 +82,7 @@ export function App() {
     return window.liveRecorderDesktop?.onDouyinStatusChanged(setDouyinAuth);
   }, []);
   useEffect(() => window.liveRecorderDesktop?.onCompactModeRequested(async enabled => {
+    if (enabled && !canLeaveEditor()) return;
     try {
       await window.liveRecorderDesktop?.setCompactMode(enabled);
       setCompact(enabled);
@@ -135,9 +137,10 @@ export function App() {
     } catch (e) { notify((e as Error).message, true); }
   };
   const toggleDebug = (enabled: boolean) => { setApiDebugEnabled(enabled); setDebugEnabledState(enabled); if (enabled) setDebugOpen(true); };
-  const navigate = (value: string) => { setPage(value); localStorage.setItem('liveRecorderLastView', value); };
+  const navigate = (value: string) => { if (value !== page && !canLeaveEditor()) return; setPage(value); localStorage.setItem('liveRecorderLastView', value); };
   const setActiveAnchorId = (value: string) => {
     if (value === activeAnchorId) return;
+    if (!canLeaveEditor()) return;
     setActiveAnchorIdState(value); if (value) localStorage.setItem('liveRecorderSelectedAnchor', value); else localStorage.removeItem('liveRecorderSelectedAnchor');
     if (!value) return;
     void (async () => {

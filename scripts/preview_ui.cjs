@@ -13,6 +13,7 @@ state.baidupan={config:{enabled:true,auto_upload:true,delete_after_upload:true,k
 mediaFiles[0].archive_detail={upload_evidence:'task',cleanup_due_at:now+3600,remote_checked_at:now-600};
 mediaFiles[1].archive_detail={upload_evidence:'history'};
 mediaFiles[2].archive_detail={upload_evidence:'task'};
+library.anchors[0].recording_sessions=[{id:'session-preview',anchor:anchors[0].name,started_at:now,segment_count:2,total_size:9*1024**3,format:'MP4',settled:true,merged_file:mediaFiles[0],files:mediaFiles}];
 let failAction = false;
 const server = http.createServer((req, res) => {
   if (req.url === '/seed') { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Offline UI preview</title>'); }
@@ -25,7 +26,9 @@ app.whenReady().then(async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
   const win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } });
-  win.webContents.on('console-message', event => { if ((event.level === 'error' || event.level === 3) && !event.message.includes('Failed to load resource')) errors.push(event.message); });
+  // Fixture resets navigate without a real mouse gesture. Chromium suppresses the
+  // native beforeunload prompt in that case; explicit in-app guards are tested below.
+  win.webContents.on('console-message', event => { if ((event.level === 'error' || event.level === 3) && !event.message.includes('Failed to load resource') && !event.message.startsWith("Blocked attempt to show a 'beforeunload' confirmation panel")) errors.push(event.message); });
   const settle = () => new Promise(resolve => setTimeout(resolve, 350));
   async function shot(name, page, width = 1280, height = 900, mini = false, theme = 'dark', modes = {}) {
     win.setContentSize(width, height);
@@ -72,6 +75,12 @@ app.whenReady().then(async () => {
     state.interaction={};
     await shot('anchors', 'anchors');
     if (!await win.webContents.executeJavaScript(`document.querySelector('h3')?.textContent==='主播库' && !document.querySelector('.mantine-Drawer-content')`)) throw new Error('Anchor library is not the primary view');
+    await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('.fieldGrid input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'未保存的昵称');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await settle();
+    await win.webContents.executeJavaScript(`window.confirm=()=>false;document.querySelectorAll('.anchorItem')[1].click();document.querySelector('.sidebar nav button').click()`);
+    await settle();
+    if (!await win.webContents.executeJavaScript(`document.querySelector('.fieldGrid input')?.value==='未保存的昵称' && document.querySelector('.anchorItem.active')?.textContent.includes('小婷winko')`)) throw new Error('Unsaved anchor changes were lost');
+    await shot('anchors', 'anchors');
     await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(el=>el.textContent==='添加主播').click()`);
     await settle();
     if (!await win.webContents.executeJavaScript(`document.querySelector('.mantine-Drawer-content')?.textContent.includes('粘贴手机分享')`)) throw new Error('Add anchor workflow is missing');
@@ -81,6 +90,11 @@ app.whenReady().then(async () => {
     await settle();
     if (!await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).some(el=>el.textContent==='任务已提交'&&el.disabled)`)) throw new Error('Work submission did not prevent duplicate clicks');
     await shot('works-narrow', 'works', 390, 760);
+    await shot('library', 'library');
+    if (!await win.webContents.executeJavaScript(`!!document.querySelector('.sessionCard') && !document.querySelector('.sessionFiles').open`)) throw new Error('Sessions must be primary and raw segments collapsed');
+    await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(el=>el.textContent==='场次详情').click()`);
+    await settle();
+    if (!await win.webContents.executeJavaScript(`document.querySelector('.mantine-Drawer-content')?.textContent.includes('文件已复核')`)) throw new Error('Session archive evidence differs from file evidence');
     await shot('library', 'library');
     if (!await win.webContents.executeJavaScript(`document.querySelector('.mediaCards')?.textContent.includes('曾上传，待复核') && document.querySelector('.mediaCards')?.textContent.includes('保留至')`)) throw new Error('Local and cloud archive states are not distinct');
     await win.webContents.executeJavaScript(`(()=>{const input=document.querySelector('input[aria-label="搜索文件名"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'不存在的录像');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
@@ -92,6 +106,9 @@ app.whenReady().then(async () => {
     await settle();
     if (!await win.webContents.executeJavaScript(`document.body.textContent.includes('有未保存修改') && Array.from(document.querySelectorAll('button')).some(el=>el.textContent.includes('保存设置')&&!el.disabled)`)) throw new Error('Settings dirty state was not visible');
     if (!await win.webContents.executeJavaScript(`!!document.querySelector('.settingsSaveBar')`)) throw new Error('Persistent settings save bar missing');
+    await win.webContents.executeJavaScript(`window.confirm=()=>false;document.querySelector('.sidebar nav button').click()`);
+    await settle();
+    if (!await win.webContents.executeJavaScript(`!!document.querySelector('.settingsSaveBar') && document.querySelector('.sidebar nav button.active')?.textContent.includes('设置')`)) throw new Error('Unsaved settings were lost on navigation');
     await fs.promises.writeFile(path.join(output,'settings-dirty.png'),(await win.webContents.capturePage()).toPNG());
     await shot('settings-narrow', 'settings', 390, 760);
     await shot('light', 'interact', 1280, 900, false, 'white');

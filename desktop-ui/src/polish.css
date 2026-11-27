@@ -1,4 +1,10 @@
 /* Final layout rules shared by the desktop workspace and floating controls. */
+.sessionCard { flex-wrap: wrap; cursor: default; }
+.sessionCard > .grow { min-width: 160px; }
+.sessionArchiveSummary { flex-basis: 100%; padding-left: 44px; overflow-wrap: anywhere; }
+.sessionFiles > summary { cursor: pointer; padding: 12px 0; color: var(--mantine-color-dimmed); font-size: 13px; }
+.sessionFiles[open] > summary { margin-bottom: 8px; }
+@media (max-width: 600px) { .sessionArchiveSummary { padding-left: 0; } }
 .topbar { min-width: 0; height: auto; min-height: 78px; gap: 14px; flex-wrap: wrap; padding-block: 14px; }
 .topbar > .mantine-Group-root { min-width: 0; }
 .topbar > .mantine-Group-root:last-child { flex-wrap: wrap; gap: 7px; }
