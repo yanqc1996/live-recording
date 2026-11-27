@@ -6,9 +6,24 @@ from http.server import ThreadingHTTPServer
 
 from desktop_app import AppState, make_handler
 from unittest.mock import Mock
+from unittest.mock import patch
+from contextlib import ExitStack
+from pathlib import Path
 
 
 class AnchorPresenceTests(unittest.TestCase):
+    def test_uploads_do_not_enable_automatic_transcription(self):
+        with ExitStack() as stack:
+            dependencies = ['RoomStore', 'AnchorStore', 'SettingsStore', 'UpdateManager',
+                            'RecentRecordingCache', 'MediaIntegrityStore', 'RecorderProcess',
+                            'GiftLedger', 'LazyDouyinInteraction', 'WorkPullManager',
+                            'TranscriptionManager', 'BaiduPanUploadManager', 'RecordingTaskQueue']
+            mocks = {name: stack.enter_context(patch('desktop_app.' + name)) for name in dependencies}
+            stack.enter_context(patch.object(AppState, 'output_path', return_value=Path('/tmp/manual-transcription-test')))
+            AppState()
+            self.assertNotIn('before_upload', mocks['BaiduPanUploadManager'].call_args.kwargs)
+            mocks['TranscriptionManager'].return_value.archive_before_upload.assert_not_called()
+
     def test_presence_checks_disabled_anchors_without_starting_recording(self):
         for running in (False, True):
             with self.subTest(running=running):

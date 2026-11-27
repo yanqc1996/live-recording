@@ -149,7 +149,8 @@ class AppState:
         self.transcriptions = TranscriptionManager(PROJECT_ROOT / 'transcriptions', self.output_path,
             lambda: [str(s.get('path')) for s in self.recorder.status().get('room_states', {}).values()
                      if s.get('path') and s.get('state') in {'recording', 'reconnecting'}])
-        self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT, before_upload=self._transcribe_before_upload)
+        # Transcription is manual-only. Uploading must not implicitly start it.
+        self.uploads = BaiduPanUploadManager(PROJECT_ROOT, BUNDLE_ROOT)
         self.recording_tasks = RecordingTaskQueue(
             PROJECT_ROOT / 'config' / 'recording_tasks.json', self._process_recording_task)
 
